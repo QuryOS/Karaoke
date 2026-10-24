@@ -172,7 +172,7 @@ function createKaraokeUI(opts) {
   var STORE_KEY = 'karaoke.uploads.v1';
 
   // ---------- Estado ----------
-  var catalog = [], mine = [], catalogError = '';
+  var catalog = [], mine = [], catalogError = '', catalogSoft = false;
   var cur = null;        // { song, lrc, cover, startedAt }
   var room = null;       // { code, role, tr, peers:{id:name}, myId, connected }
   var clockOffset = 0;   // ms que hay que sumar a la hora local para obtener la del anfitrión
@@ -337,7 +337,7 @@ function createKaraokeUI(opts) {
   function loadCatalog() {
     catalogError = '';
     return fetch(cfg.catalogUrl, { cache: 'no-cache' })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (r) { if (!r.ok) { var he = new Error('HTTP ' + r.status); he.http = r.status; throw he; } return r.json(); })
       .then(function (list) {
         catalog = (Array.isArray(list) ? list : []).filter(function (s) { return s && s.titulo && s.audio; }).map(function (s) {
           return { id: String(s.id || s.titulo), titulo: String(s.titulo), artista: s.artista || '', audio: s.audio, portada: s.portada || null, letra: s.letra || null, expira: krkParseExpiry(s.expira), propia: false };
@@ -346,7 +346,15 @@ function createKaraokeUI(opts) {
       })
       .catch(function (e) {
         catalog = [];
-        catalogError = 'No se pudo leer ' + cfg.catalogUrl + ' (' + (e && e.message || e) + '). Abre el juego desde un servidor, no como archivo local.';
+        catalogSoft = false;
+        if (e && e.http === 404) {
+          catalogSoft = true;
+          catalogError = 'No se encontró ' + cfg.catalogUrl + ' en el servidor (error 404). Si ya tienes canciones propias, revisa que la carpeta "musica" esté subida a GitHub con ese nombre en minúsculas. Si todavía no, puedes ignorar este aviso: tus canciones subidas aparecen igual.';
+        } else if (e && e.name === 'SyntaxError') {
+          catalogError = 'El archivo ' + cfg.catalogUrl + ' tiene un error de formato (JSON inválido). Revisa comas y comillas.';
+        } else {
+          catalogError = 'No se pudo leer ' + cfg.catalogUrl + ' (' + (e && e.message || e) + '). Si abres el juego como archivo local, usa un servidor.';
+        }
         renderList();
       });
   }
@@ -373,7 +381,7 @@ function createKaraokeUI(opts) {
     var q = searchIn.value.trim().toLowerCase();
     var list = allSongs().filter(function (s) { return !q || (s.titulo + ' ' + (s.artista || '')).toLowerCase().indexOf(q) >= 0; });
     listMsg.textContent = catalogError || (list.length ? '' : (q ? 'Sin resultados.' : 'Todavía no hay canciones. Agrega entradas a ' + cfg.catalogUrl + ' o sube una.'));
-    listMsg.className = catalogError ? 'k-err' : 'k-muted';
+    listMsg.className = catalogError && !catalogSoft ? 'k-err' : 'k-muted';
     list.forEach(function (s) {
       var off = isExpired(s);
       var cv = coverNode(s);
@@ -427,8 +435,23 @@ function createKaraokeUI(opts) {
       if (xhr.status >= 200 && xhr.status < 300 && /^https?:\/\//i.test(t)) cb(null, t);
       else cb(new Error(t.slice(0, 120) || ('HTTP ' + xhr.status)));
     };
-    xhr.onerror = function () { cb(new Error('No se pudo conectar (sin internet o el servicio bloqueó la petición).')); };
+    xhr.onerror = function () { diagnoseUpload(function (msg) { cb(new Error(msg)); }); };
     xhr.send(fd);
+  }
+  // Cuando falla la subida, averigua si el servicio es alcanzable (entonces es un bloqueo CORS) o no
+  function diagnoseUpload(cb) {
+    var origin = String(cfg.uploadUrl).replace(/^(https?:\/\/[^\/]+).*$/, '$1/');
+    var finished = false;
+    function finish(reachable) {
+      if (finished) return;
+      finished = true;
+      cb(reachable
+        ? 'el servicio responde, pero el navegador bloqueó la subida (CORS). Hace falta un intermediario (archivo worker_subida.js) o pegar un enlace directo.'
+        : 'no se pudo llegar al servicio de archivos temporales. Puede estar bloqueado en tu red o caído; prueba con otra red (datos móviles o Wi-Fi).');
+    }
+    setTimeout(function () { finish(false); }, 6000);
+    try { fetch(origin, { mode: 'no-cors', cache: 'no-store' }).then(function () { finish(true); }, function () { finish(false); }); }
+    catch (e) { finish(false); }
   }
   function makeThumb(file, cb) {
     if (!file || !/^video\//.test(file.type || '')) return cb(null);
@@ -498,9 +521,13 @@ function createKaraokeUI(opts) {
     return { id: song.id, titulo: song.titulo, artista: song.artista || '', audio: song.audio, portada: p, letra: song.letra || null, expira: song.expira || null, propia: !!song.propia };
   }
   function loadSong(song) {
-    var me = { song: song, lrc: [], cover: null, startedAt: 0 };
+    var me = { song: song, lrc: [], cover: null, startedAt: 0, ready: false, err: '' };
     cur = me;
-    audio.src = krkResolve(cfg.basePath, song.audio);
+    var srcUrl = krkResolve(cfg.basePath, song.audio);
+    if (typeof location !== 'undefined' && location.protocol === 'https:' && /^http:\/\//i.test(srcUrl)) {
+      me.err = 'el enlace usa http:// y esta página (https://) lo bloquea; usa un enlace https://';
+    }
+    audio.src = srcUrl;
     if (song.letra) {
       fetch(krkResolve(cfg.basePath, song.letra))
         .then(function (r) { return r.ok ? r.text() : ''; })
@@ -551,9 +578,22 @@ function createKaraokeUI(opts) {
     }
     refresh();
   }
+  function statusText() {
+    if (!cur) return '';
+    if (cur.err) return 'Error: ' + cur.err;
+    if (audio.paused) return 'En pausa';
+    return cur.ready ? 'Reproduciendo' : 'Cargando...';
+  }
   function togglePlay() {
     if (!cur) return;
     if (isGuest()) { toast('Lo controla el anfitrión'); return; }
+    if (cur.err) {
+      cur.err = '';
+      try { audio.load(); } catch (e) {}
+      var rp = audio.play(); if (rp && rp.catch) rp.catch(noop);
+      refresh();
+      return;
+    }
     if (audio.paused) {
       cur.startedAt = Date.now() - audio.currentTime * 1000;
       var p = audio.play(); if (p && p.catch) p.catch(noop);
@@ -572,10 +612,22 @@ function createKaraokeUI(opts) {
     refresh();
   }
   audio.addEventListener('ended', function () { if (isHost()) stopPlayback(true); else if (!isGuest()) stopPlayback(false); });
-  audio.addEventListener('error', function () { if (cur) toast('No se pudo cargar el audio (enlace roto o expirado)'); });
+  audio.addEventListener('error', function () {
+    if (!cur) return;
+    var c = audio.error && audio.error.code;
+    cur.err = c === 2 ? 'no se pudo descargar el archivo (red o servidor bloqueado)'
+      : c === 3 ? 'el archivo está dañado o no se puede decodificar'
+      : 'el enlace no es un archivo de audio o video directo, o su formato no es compatible';
+    try { console.warn('[karaoke] error de audio', c, audio.src); } catch (e) {}
+    toast('No se pudo reproducir: ' + cur.err);
+    refresh();
+  });
+  audio.addEventListener('waiting', function () { if (cur) { cur.ready = false; refresh(); } });
   audio.addEventListener('playing', function () {
+    if (cur) { cur.ready = true; cur.err = ''; }
     // El anfitrión vuelve a marcar la hora de inicio cuando el audio realmente empieza (después de cargar)
     if (cur && isHost()) { cur.startedAt = Date.now() - audio.currentTime * 1000; room.tr.send({ t: 'resume', startedAt: cur.startedAt }); }
+    refresh();
   });
   audio.addEventListener('play', function () { refresh(); });
   audio.addEventListener('pause', function () { refresh(); });
@@ -585,7 +637,7 @@ function createKaraokeUI(opts) {
     if (!cur) return st;
     var pos = audio.currentTime || 0, dur = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
     st.title = cur.song.titulo; st.cover = cur.cover; st.pos = pos; st.dur = dur;
-    st.progress = dur ? pos / dur : 0; st.paused = audio.paused;
+    st.progress = dur ? pos / dur : 0; st.paused = audio.paused; st.status = statusText();
     if (cur.lrc.length) {
       var l = krkLineAt(cur.lrc, pos);
       st.lines = { prev: l.prev, cur: l.cur, next: l.next, next2: l.next2, progress: l.progress };
@@ -624,18 +676,19 @@ function createKaraokeUI(opts) {
     if (s.portada) { plCover.textContent = ''; plCover.style.backgroundImage = 'url("' + String(krkResolve(cfg.basePath, s.portada)).replace(/"/g, '%22') + '")'; }
     else { plCover.style.backgroundImage = ''; plCover.textContent = '\u266A'; }
     plTitle.textContent = s.titulo;
-    plSub.textContent = (room ? (isHost() ? 'Eres el anfitrión · ' : 'Controla el anfitrión · ') : '') + (audio.paused ? 'En pausa' : 'Reproduciendo');
+    plSub.textContent = (room ? (isHost() ? 'Eres el anfitrión · ' : 'Controla el anfitrión · ') : '') + statusText();
+    plSub.className = cur.err ? 'k-err' : 'k-muted';
     var dur = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
     plBar.style.width = dur ? Math.round((audio.currentTime / dur) * 100) + '%' : '0%';
     plTime.textContent = krkFmtTime(audio.currentTime) + ' / ' + (dur ? krkFmtTime(dur) : '--:--');
     plLine.textContent = cur.lrc.length ? krkLineAt(cur.lrc, audio.currentTime).cur : '';
-    plPlay.textContent = audio.paused ? 'Reanudar' : 'Pausar';
+    plPlay.textContent = cur.err ? 'Reintentar' : (audio.paused ? 'Reanudar' : 'Pausar');
     plPlay.style.display = isGuest() ? 'none' : '';
     plStop.style.display = isGuest() ? 'none' : '';
   }
   function renderMini() {
     mini.classList.toggle('k-on', !!cur);
-    if (cur) { miniTitle.textContent = cur.song.titulo; miniBtn.textContent = audio.paused ? '\u25B6' : '\u275A\u275A'; }
+    if (cur) { miniTitle.textContent = cur.song.titulo + (cur.err ? ' · error' : (!audio.paused && !cur.ready ? ' · cargando...' : '')); miniBtn.textContent = (audio.paused || cur.err) ? '\u25B6' : '\u275A\u275A'; }
   }
   function refresh() {
     renderMini();
