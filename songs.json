@@ -8,8 +8,11 @@
     "letra": "ejemplo/letra.lrc"
   },
   {
-    "id": "ejemplo2",
-    "titulo": "Otra canción sin letra (ejemplo)",
-    "audio": "ejemplo2/audio.mp3"
+    "id": "ejemplo-video",
+    "titulo": "Canción con video (ejemplo)",
+    "artista": "Tu nombre",
+    "video": "https://TU-ENLACE-DIRECTO/video.mp4",
+    "portada": "ejemplo/portada.jpg",
+    "letra": "ejemplo/letra.lrc"
   }
 ]
