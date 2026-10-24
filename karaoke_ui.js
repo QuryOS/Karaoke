@@ -2,7 +2,7 @@
  * Interfaz de la tableta del karaoke
  * 
  * Opciones: 1) lista de canciones leída de musica/songs.json, 2) subir una canción (Litterbox, archivos temporales), 3) sala con código grupal (P2P)
- * Incluye: aviso de derechos de autor antes de subir y antes de entrar a una sala, reproductor, letra sincronizada (.lrc) en las pantallas del lugar
+ * Incluye: aviso de derechos de autor antes de subir y antes de entrar a una sala, reproductor, video y letra sincronizada (.lrc) en las pantallas del lugar
  * 
  * Uso:
  *   const ui = createKaraokeUI({ screen: karaoke.group.userData.screen });
@@ -10,7 +10,7 @@
  *   ui.open();                                                     // o abrirlo desde un botón
  * 
  * Opciones (todas opcionales):
- *   catalogUrl, basePath, screen, reportEmail, maxUploadMB, peerOptions, playerName, autoAcceptRequests
+ *   catalogUrl, basePath, screen, reportEmail, maxUploadMB, peerOptions, playerName, autoAcceptRequests, videoFps
  * 
  * Requiere (solo para salas por internet): PeerJS → <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js">
  * Sin PeerJS las salas funcionan en modo local de pruebas (dos pestañas del mismo navegador).
@@ -166,6 +166,7 @@ function createKaraokeUI(opts) {
     maxUploadMB: opts.maxUploadMB || 100,
     peerOptions: opts.peerOptions || {},
     tapRange: opts.tapRange || 12,
+    videoFps: opts.videoFps || 24,
     autoAcceptRequests: opts.autoAcceptRequests !== false,
     playerName: opts.playerName || ('Invitado ' + Math.floor(100 + Math.random() * 900))
   };
@@ -178,8 +179,11 @@ function createKaraokeUI(opts) {
   var clockOffset = 0;   // ms que hay que sumar a la hora local para obtener la del anfitrión
   var stack = ['home'];
   var gateOk = null;
-  var audio = new Audio();
+  // Un solo elemento <video> reproduce audio y video; sus cuadros se dibujan en las pantallas del lugar
+  var audio = document.createElement('video');
   audio.preload = 'auto';
+  audio.playsInline = true;
+  audio.setAttribute('playsinline', '');
   var timers = [];
   var attached = null;
   var destroyed = false;
@@ -339,8 +343,8 @@ function createKaraokeUI(opts) {
     return fetch(cfg.catalogUrl, { cache: 'no-cache' })
       .then(function (r) { if (!r.ok) { var he = new Error('HTTP ' + r.status); he.http = r.status; throw he; } return r.json(); })
       .then(function (list) {
-        catalog = (Array.isArray(list) ? list : []).filter(function (s) { return s && s.titulo && s.audio; }).map(function (s) {
-          return { id: String(s.id || s.titulo), titulo: String(s.titulo), artista: s.artista || '', audio: s.audio, portada: s.portada || null, letra: s.letra || null, expira: krkParseExpiry(s.expira), propia: false };
+        catalog = (Array.isArray(list) ? list : []).filter(function (s) { return s && s.titulo && (s.audio || s.video); }).map(function (s) {
+          return { id: String(s.id || s.titulo), titulo: String(s.titulo), artista: s.artista || '', audio: s.video || s.audio, portada: s.portada || null, letra: s.letra || null, expira: krkParseExpiry(s.expira), propia: false };
         });
         renderList();
       })
@@ -438,20 +442,22 @@ function createKaraokeUI(opts) {
     xhr.onerror = function () { diagnoseUpload(function (msg) { cb(new Error(msg)); }); };
     xhr.send(fd);
   }
-  // Cuando falla la subida, averigua si el servicio es alcanzable (entonces es un bloqueo CORS) o no
+  // Cuando falla la subida, averigua si el servicio es alcanzable (entonces es un bloqueo CORS), si no responde o si tarda
   function diagnoseUpload(cb) {
     var origin = String(cfg.uploadUrl).replace(/^(https?:\/\/[^\/]+).*$/, '$1/');
     var finished = false;
-    function finish(reachable) {
+    function finish(state) {
       if (finished) return;
       finished = true;
-      cb(reachable
+      cb(state === 'cors'
         ? 'el servicio responde, pero el navegador bloqueó la subida (CORS). Hace falta un intermediario (archivo worker_subida.js) o pegar un enlace directo.'
-        : 'no se pudo llegar al servicio de archivos temporales. Puede estar bloqueado en tu red o caído; prueba con otra red (datos móviles o Wi-Fi).');
+        : state === 'slow'
+          ? 'el servicio tardó demasiado en responder; puede estar saturado o tu conexión es lenta. Inténtalo de nuevo.'
+          : 'no se pudo llegar al servicio de archivos temporales. Puede estar bloqueado en tu red o caído; prueba con otra red (datos móviles o Wi-Fi).');
     }
-    setTimeout(function () { finish(false); }, 6000);
-    try { fetch(origin, { mode: 'no-cors', cache: 'no-store' }).then(function () { finish(true); }, function () { finish(false); }); }
-    catch (e) { finish(false); }
+    setTimeout(function () { finish('slow'); }, 12000);
+    try { fetch(origin, { mode: 'no-cors', cache: 'no-store' }).then(function () { finish('cors'); }, function () { finish('net'); }); }
+    catch (e) { finish('net'); }
   }
   function makeThumb(file, cb) {
     if (!file || !/^video\//.test(file.type || '')) return cb(null);
@@ -521,12 +527,17 @@ function createKaraokeUI(opts) {
     return { id: song.id, titulo: song.titulo, artista: song.artista || '', audio: song.audio, portada: p, letra: song.letra || null, expira: song.expira || null, propia: !!song.propia };
   }
   function loadSong(song) {
-    var me = { song: song, lrc: [], cover: null, startedAt: 0, ready: false, err: '' };
+    var me = { song: song, lrc: [], cover: null, startedAt: 0, ready: false, err: '', cors: true, triedPlain: false, wantPlay: true, srcUrl: '' };
     cur = me;
     var srcUrl = krkResolve(cfg.basePath, song.audio);
     if (typeof location !== 'undefined' && location.protocol === 'https:' && /^http:\/\//i.test(srcUrl)) {
       me.err = 'el enlace usa http:// y esta página (https://) lo bloquea; usa un enlace https://';
     }
+    me.srcUrl = srcUrl;
+    // Con CORS el navegador deja dibujar el video en las pantallas; si el servidor no lo permite, se reintenta
+    // sin CORS (se oye el audio, pero las pantallas muestran portada y letra en vez del video)
+    audio.crossOrigin = 'anonymous';
+    audio.setAttribute('crossorigin', 'anonymous');
     audio.src = srcUrl;
     if (song.letra) {
       fetch(krkResolve(cfg.basePath, song.letra))
@@ -567,6 +578,7 @@ function createKaraokeUI(opts) {
     function begin() {
       var p = paused ? (pos || 0) : Math.max(0, (Date.now() + clockOffset - startedAt) / 1000);
       try { audio.currentTime = p; } catch (e) {}
+      me.wantPlay = !paused;
       if (paused) audio.pause();
       else { var pr = audio.play(); if (pr && pr.catch) pr.catch(function () { toast('Toca \u25B6 para activar el audio'); }); }
       refresh();
@@ -612,8 +624,26 @@ function createKaraokeUI(opts) {
     refresh();
   }
   audio.addEventListener('ended', function () { if (isHost()) stopPlayback(true); else if (!isGuest()) stopPlayback(false); });
+  function retryPlain() {
+    var me = cur, pos = audio.currentTime || 0;
+    me.cors = false; me.triedPlain = true; me.err = '';
+    audio.removeAttribute('crossorigin');
+    try { audio.crossOrigin = null; } catch (e) {}
+    audio.src = me.srcUrl;
+    var begin = function () {
+      audio.removeEventListener('loadedmetadata', begin);
+      if (cur !== me) return;
+      var t = (isGuest() && me.startedAt) ? Math.max(0, (Date.now() + clockOffset - me.startedAt) / 1000) : pos;
+      try { audio.currentTime = t; } catch (e) {}
+      if (me.wantPlay) { var pr = audio.play(); if (pr && pr.catch) pr.catch(noop); }
+      refresh();
+    };
+    audio.addEventListener('loadedmetadata', begin);
+    refresh();
+  }
   audio.addEventListener('error', function () {
     if (!cur) return;
+    if (cur.cors && !cur.triedPlain && cur.srcUrl && !/^(data|blob):/i.test(cur.srcUrl)) { retryPlain(); return; }
     var c = audio.error && audio.error.code;
     cur.err = c === 2 ? 'no se pudo descargar el archivo (red o servidor bloqueado)'
       : c === 3 ? 'el archivo está dañado o no se puede decodificar'
@@ -629,6 +659,9 @@ function createKaraokeUI(opts) {
     if (cur && isHost()) { cur.startedAt = Date.now() - audio.currentTime * 1000; room.tr.send({ t: 'resume', startedAt: cur.startedAt }); }
     refresh();
   });
+  audio.addEventListener('seeked', function () { drawScreen(); });
+  audio.addEventListener('loadeddata', function () { refresh(); });
+  audio.addEventListener('loadedmetadata', function () { refresh(); });
   audio.addEventListener('play', function () { refresh(); });
   audio.addEventListener('pause', function () { refresh(); });
 
@@ -638,6 +671,7 @@ function createKaraokeUI(opts) {
     var pos = audio.currentTime || 0, dur = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
     st.title = cur.song.titulo; st.cover = cur.cover; st.pos = pos; st.dur = dur;
     st.progress = dur ? pos / dur : 0; st.paused = audio.paused; st.status = statusText();
+    if (cur.cors && audio.videoWidth > 0 && audio.readyState >= 2) st.video = audio;
     if (cur.lrc.length) {
       var l = krkLineAt(cur.lrc, pos);
       st.lines = { prev: l.prev, cur: l.cur, next: l.next, next2: l.next2, progress: l.progress };
@@ -657,10 +691,11 @@ function createKaraokeUI(opts) {
   var plBarWrap = el('div', { class: 'k-bar' }, [plBar]);
   var plTime = el('p', { class: 'k-muted', style: 'text-align:center;margin:0' });
   var plLine = el('p', { style: 'text-align:center;font-size:20px;color:#ffcf4a;min-height:28px;margin:12px 0' });
+  var plNote = el('p', { class: 'k-muted', style: 'text-align:center;font-size:13px;margin:0 0 8px' });
   var plPlay = el('button', { class: 'k-btn', text: 'Pausar', onclick: function () { togglePlay(); } });
   var plStop = el('button', { class: 'k-btn k-danger', text: 'Detener', onclick: function () { if (isGuest()) toast('Lo controla el anfitrión'); else stopPlayback(true); } });
   var plPick = el('button', { class: 'k-ghost', text: 'Elegir otra', onclick: function () { go('list'); } });
-  [plCover, plTitle, plSub, plBarWrap, plTime, plLine, el('div', { class: 'k-row', style: 'justify-content:center' }, [plPlay, plStop, plPick])]
+  [plCover, plTitle, plSub, plBarWrap, plTime, plLine, plNote, el('div', { class: 'k-row', style: 'justify-content:center' }, [plPlay, plStop, plPick])]
     .forEach(function (n) { screens.player.appendChild(n); });
 
   function renderPlayer() {
@@ -668,7 +703,7 @@ function createKaraokeUI(opts) {
       plCover.style.backgroundImage = ''; plCover.textContent = '\u266A';
       plTitle.textContent = 'Nada en reproducción';
       plSub.textContent = 'Elige una canción de la lista.';
-      plBar.style.width = '0%'; plTime.textContent = ''; plLine.textContent = '';
+      plBar.style.width = '0%'; plTime.textContent = ''; plLine.textContent = ''; plNote.textContent = '';
       plPlay.style.display = 'none'; plStop.style.display = 'none';
       return;
     }
@@ -682,6 +717,7 @@ function createKaraokeUI(opts) {
     plBar.style.width = dur ? Math.round((audio.currentTime / dur) * 100) + '%' : '0%';
     plTime.textContent = krkFmtTime(audio.currentTime) + ' / ' + (dur ? krkFmtTime(dur) : '--:--');
     plLine.textContent = cur.lrc.length ? krkLineAt(cur.lrc, audio.currentTime).cur : '';
+    plNote.textContent = (audio.videoWidth > 0 && !cur.cors) ? 'El servidor de este archivo no permite mostrar el video en las pantallas del lugar: solo se oye el audio.' : (audio.videoWidth > 0 ? 'El video se está mostrando en las pantallas del lugar.' : '');
     plPlay.textContent = cur.err ? 'Reintentar' : (audio.paused ? 'Reanudar' : 'Pausar');
     plPlay.style.display = isGuest() ? 'none' : '';
     plStop.style.display = isGuest() ? 'none' : '';
@@ -923,10 +959,19 @@ function createKaraokeUI(opts) {
 
   // ---------- Bucle: pantallas, progreso y corrección de desfase ----------
   var driftTick = 0;
+  var hasRaf = typeof requestAnimationFrame === 'function', raf = 0, lastDraw = 0;
+  function frameLoop(ts) {
+    if (destroyed) return;
+    raf = requestAnimationFrame(frameLoop);
+    if (!cur || audio.paused) return;
+    var withVideo = cur.cors && audio.videoWidth > 0;
+    if (ts - lastDraw >= (withVideo ? 1000 / cfg.videoFps : 100)) { lastDraw = ts; drawScreen(); }
+  }
+  if (hasRaf) raf = requestAnimationFrame(frameLoop);
   timers.push(setInterval(function () {
     if (destroyed) return;
     if (cur && !audio.paused) {
-      drawScreen();
+      if (!hasRaf) drawScreen();
       if (screens.player.classList.contains('k-on')) renderPlayer();
       if (isGuest() && ++driftTick % 20 === 0 && cur.startedAt) {
         var expected = (Date.now() + clockOffset - cur.startedAt) / 1000;
@@ -964,6 +1009,7 @@ function createKaraokeUI(opts) {
   }
   function destroy() {
     destroyed = true;
+    if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
     detach(); leaveRoom();
     timers.forEach(function (t) { clearInterval(t); });
     try { audio.pause(); audio.removeAttribute('src'); } catch (e) {}
