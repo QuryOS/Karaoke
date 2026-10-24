@@ -209,7 +209,7 @@ function createKaraoke(THREE, opts) {
       var tx = st.cover ? 440 : 70;
       g.fillStyle = '#ffffff'; fitText(g, st.title, w - tx - 50, 54, 'bold'); g.fillText(st.title, tx, 200);
       g.fillStyle = '#ffd9a0'; g.font = '30px Arial, sans-serif';
-      g.fillText(st.paused ? 'En pausa' : 'Reproduciendo', tx, 270);
+      g.fillText(st.status || (st.paused ? 'En pausa' : 'Reproduciendo'), tx, 270);
       g.fillStyle = '#9a9ac0'; g.font = '26px Arial, sans-serif';
       g.fillText('Esta canción no tiene letra', tx, 330);
     }
