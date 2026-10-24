@@ -172,6 +172,21 @@ function createKaraoke(THREE, opts) {
       g.fillStyle = 'rgba(255,255,255,' + b[3] + ')';
       g.beginPath(); g.arc(b[0], b[1], b[2], 0, Math.PI * 2); g.fill();
     });
+    // Video de la canción como fondo (se recorta para llenar la pantalla) con sombra abajo para leer la letra
+    var vid = false;
+    if (st.video) {
+      try {
+        var vw = st.video.videoWidth, vh = st.video.videoHeight;
+        if (vw && vh) {
+          var sc = Math.max(w / vw, h / vh), dw = vw * sc, dh = vh * sc;
+          g.drawImage(st.video, (w - dw) / 2, (h - dh) / 2, dw, dh);
+          var sh = g.createLinearGradient(0, 300, 0, h);
+          sh.addColorStop(0, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,0.8)');
+          g.fillStyle = sh; g.fillRect(0, 300, w, h - 300);
+          vid = true;
+        }
+      } catch (e) { vid = false; }
+    }
     g.textBaseline = 'middle'; g.textAlign = 'left';
     g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(0, 0, w, 70);
     g.fillStyle = '#ffd9a0';
@@ -189,13 +204,29 @@ function createKaraoke(THREE, opts) {
       return;
     }
     var ly = st.lines, hasLy = ly && (ly.cur || ly.next || ly.prev);
-    if (st.cover) {
+    if (st.cover && !vid) {
       try {
         if (hasLy) g.drawImage(st.cover, 28, 392, 110, 110);
         else g.drawImage(st.cover, 70, 110, 330, 330);
       } catch (e) {}
     }
-    if (hasLy) {
+    if (vid) {
+      g.textAlign = 'center';
+      if (hasLy) {
+        var vt = ly.cur || '\u266A';
+        fitText(g, vt, w - 100, 58, 'bold');
+        var vtw = g.measureText(vt).width, vlx = w / 2 - vtw / 2;
+        g.lineJoin = 'round'; g.lineWidth = 9; g.strokeStyle = 'rgba(0,0,0,0.85)';
+        g.strokeText(vt, w / 2, 436);
+        g.fillStyle = '#ffffff'; g.fillText(vt, w / 2, 436);
+        g.save(); g.beginPath(); g.rect(vlx - 4, 380, vtw * (ly.progress || 0) + 8, 110); g.clip();
+        g.fillStyle = '#ffcf4a'; g.fillText(vt, w / 2, 436); g.restore();
+        fitText(g, ly.next, w - 100, 34, 'bold');
+        g.lineWidth = 7; g.strokeText(ly.next, w / 2, 488);
+        g.fillStyle = '#e6e6f5'; g.fillText(ly.next, w / 2, 488);
+        g.lineWidth = 1;
+      }
+    } else if (hasLy) {
       g.fillStyle = '#7a7aa0'; fitText(g, ly.prev, w - 100, 40, 'bold'); g.fillText(ly.prev, w / 2, 160);
       fitText(g, ly.cur || '\u266A', w - 100, 66, 'bold');
       var tw = g.measureText(ly.cur || '\u266A').width, lx = w / 2 - tw / 2;
@@ -219,7 +250,7 @@ function createKaraoke(THREE, opts) {
     g.fillStyle = '#ffd9a0'; g.font = '24px Arial, sans-serif';
     g.fillText(fmtTime(st.pos), 60, 535);
     g.textAlign = 'right'; g.fillText(st.dur ? fmtTime(st.dur) : '--:--', w - 60, 535);
-    if (st.paused && hasLy) { g.textAlign = 'center'; g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = 'bold 28px Arial, sans-serif'; g.fillText('EN PAUSA', w / 2, 480); }
+    if (st.paused && hasLy) { g.textAlign = 'center'; g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = 'bold 28px Arial, sans-serif'; g.fillText('EN PAUSA', w / 2, vid ? 130 : 480); }
   }
   var tLyrics = clampTex(makeTex(1024, 576, function (g, w, h) { drawLyrics(g, w, h, null); }));
 
@@ -251,6 +282,23 @@ function createKaraoke(THREE, opts) {
       g.fillStyle = '#10131f'; g.font = 'bold 30px Arial, sans-serif'; g.fillText(icons[i][0], cx, 99);
       g.fillStyle = '#ffffff'; g.font = '16px Arial, sans-serif'; g.fillText(icons[i][1], cx, 148);
     }
+  }));
+
+  var tLaptop = clampTex(makeTex(512, 288, function (g, w, h) {
+    g.fillStyle = '#10131f'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#d4a24c'; g.fillRect(0, 0, w, 40);
+    g.fillStyle = '#10131f'; g.font = 'bold 24px Arial, sans-serif';
+    g.textBaseline = 'middle'; g.textAlign = 'left';
+    g.fillText('CATÁLOGO', 16, 21);
+    var names = ['Noche de Estrellas', 'Bailando bajo la luna', 'Camino a casa', 'Verano eterno', 'Corazón de neón', 'La última canción'];
+    g.font = '20px Arial, sans-serif';
+    for (var i = 0; i < names.length; i++) {
+      g.fillStyle = i % 2 ? '#c9cfe6' : '#ffffff';
+      g.fillText((101 + i) + '   ' + names[i], 16, 66 + i * 32);
+    }
+    g.fillStyle = '#2f7a3a'; g.fillRect(0, h - 26, w, 26);
+    g.fillStyle = '#ffffff'; g.font = '16px Arial, sans-serif';
+    g.fillText('\u25CF En línea', 16, h - 13);
   }));
 
   var tMenu = clampTex(makeTex(512, 384, function (g, w, h) {
@@ -388,6 +436,7 @@ function createKaraoke(THREE, opts) {
   var mLyrics = basic({ map: tLyrics });
   var mSongs = basic({ map: tSongs });
   var mTabletScr = basic({ map: tTablet });
+  var mLaptopScr = basic({ map: tLaptop });
   var mHit = new THREE.MeshBasicMaterial({ visible: false });
   var mMenu = basic({ map: tMenu });
   var mNeon = basic({ map: tNeon, transparent: true, depthWrite: false });
@@ -695,11 +744,17 @@ function createKaraoke(THREE, opts) {
     box(0.06, 0.06, 0.02, mGold, s * 3.5 + 0.3, 0.45, -6.04);
   });
   [-2.4, 2.4].forEach(function (x) {
-    var wd = box(0.7, 0.3, 0.4, mSpk, x, 0.5, -4.95);
-    wd.rotation.x = -0.4;
-    var wg = plane(0.62, 0.22, mSpkSub, x, 0.54, -4.8, 0);
-    wg.rotation.x = -0.4 - 0.2;
-    wg.position.set(x, 0.52, -4.77);
+    var wg = new THREE.Group();
+    wg.position.set(x, 0.57, -4.95);
+    wg.rotation.y = Math.PI;               // la cara mira hacia los cantantes (-Z)
+    group.add(wg);
+    var tilt = new THREE.Group();
+    tilt.rotation.x = -0.45;               // la cara se inclina hacia arriba
+    wg.add(tilt);
+    box(0.7, 0.28, 0.4, mSpk, 0, 0, 0, tilt);
+    var wgr = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.24), mSpkSub);
+    wgr.position.set(0, 0, 0.2015);
+    tilt.add(wgr);
   });
 
   // ---------- Micrófonos con pedestal, cable y micrófonos inalámbricos ----------
@@ -769,10 +824,15 @@ function createKaraoke(THREE, opts) {
   box(0.06, 0.76, 0.8, mWoodPlain, 7.95, 0.38, -5.7);
   box(1.9, 0.5, 0.04, mWoodPlain, 7.0, 0.5, -6.1);
   box(0.5, 0.025, 0.34, mMetal, 6.6, 0.8, -5.65);
-  var lap = box(0.5, 0.3, 0.015, mBlack, 6.6, 0.96, -5.82);
-  lap.rotation.x = -0.25;
-  var lapScr = plane(0.46, 0.26, mSongs, 6.6, 0.96, -5.808, Math.PI);
-  lapScr.rotation.x = 0.25;
+  // La tapa y la pantalla comparten un grupo con bisagra: giran juntas y no se desalinean
+  var lapG = new THREE.Group();
+  lapG.position.set(6.6, 0.8125, -5.8);
+  lapG.rotation.x = -0.25;
+  group.add(lapG);
+  box(0.5, 0.3, 0.015, mBlack, 0, 0.15, 0, lapG);
+  var lapScr = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.26), mLaptopScr);
+  lapScr.position.set(0, 0.15, 0.0085);
+  lapG.add(lapScr);
   box(0.6, 0.08, 0.35, mBlack, 7.4, 0.83, -5.65);
   var knobs = [], fad = [];
   for (var k = 0; k < 6; k++) {
