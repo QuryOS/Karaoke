@@ -12,6 +12,10 @@
  *   karaoke.group.userData.tablets → mallas de las tabletas (para detectar toques con Raycaster)
  *   karaoke.group.userData.screen.draw(estado) → redibuja todas las pantallas del lugar
  *   karaoke.group.userData.setQuality('full' | 'medium' | 'low') → ajusta las luces en vivo (sin reconstruir)
+ *   karaoke.group.userData.seats → puntos de asiento [{ id, kind, x, y, z, rotY }] (rotY = hacia dónde mira quien se sienta)
+ *   karaoke.group.userData.nav → { bounds, obstacles, collide(x, z, radio) → {x, z}, floorY(x, z) } para caminar sin atravesar muebles
+ *   karaoke.group.userData.exitDoor → mallas invisibles sobre la puerta de salida (para Raycaster)
+ *   karaoke.dispose() → libera toda la memoria del salón al salir de la escena
  * 
  * Calidad (opts.quality): 'high' (por defecto), 'medium' o 'low'. Baja la cantidad de luces, usa materiales más
  * simples, une las piezas fijas en pocas mallas y reduce la resolución de las pantallas.
@@ -508,6 +512,7 @@ function createKaraoke(THREE, opts) {
   var UPlane = new THREE.PlaneGeometry(1, 1);
   UPlane.rotateX(-Math.PI / 2);
   var UP = new THREE.Vector3(0, 1, 0);
+  var seats = [], obstacles = [];   // puntos de asiento y obstáculos de paso (para avatares)
   var dummy = new THREE.Object3D();
   var qFront = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
   var qSide = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2);
@@ -841,6 +846,8 @@ function createKaraoke(THREE, opts) {
   inst(UC, mBlack, mCables);
   // Taburete del cantante
   cyl(0.2, 0.06, mChairSeat, -3.0, 1.0, -5.3);
+  seats.push({ id: 'taburete-escenario', kind: 'taburete', x: -3.0, y: 1.03, z: -5.3, rotY: 0 });
+  obstacles.push({ t: 'c', x: -3.0, z: -5.3, r: 0.22 });
   cyl(0.025, 0.65, mMetal, -3.0, 0.68, -5.3);
   cyl(0.2, 0.02, mMetal, -3.0, 0.36, -5.3);
   // Monitores de apoyo (letras para el cantante) en soportes
@@ -1009,7 +1016,7 @@ function createKaraoke(THREE, opts) {
   box(0.14, 0.12, 0.08, mSteel, -6.95, 1.17, 4.0);
   box(0.12, 0.012, 0.06, mPaper, -6.95, 1.24, 4.0);
   // Menú de pizarra (sobre el espejo) y letrero de neón
-  box(3.1, 0.95, 0.05, mFrame, -8.975, 2.9, 0.6);
+  box(0.05, 0.95, 3.1, mFrame, -8.975, 2.9, 0.6);   // delgado en X (pegado a la pared) y largo en Z
   plane(3.0, 0.85, mMenu, -8.945, 2.9, 0.6, Math.PI / 2);
   plane(2.0, 0.64, mNeon, -8.945, 2.95, 4.3, Math.PI / 2);
 
@@ -1021,6 +1028,8 @@ function createKaraoke(THREE, opts) {
     stPost.push([x, h / 2, z, 0.025, h, 0.025, 0]);
     stBase.push([x, 0.015, z, 0.19, 0.03, 0.19, 0]);
     stRing.push([x, 0.3, z, 0.17, 0.17, 0.17, 0, qFront]);
+    seats.push({ id: 'taburete-' + (seats.length + 1), kind: 'taburete', x: x, y: h + 0.06, z: z, rotY: -Math.PI / 2 });
+    obstacles.push({ t: 'c', x: x, z: z, r: 0.25 });
   }
   [-1.5, -0.2, 1.1, 2.4, 3.7, 5.0].forEach(function (zz) { addStool(-5.8, zz, 0.78); });
   var GRing = new THREE.TorusGeometry(1, 0.07, 6, 18);
@@ -1037,6 +1046,7 @@ function createKaraoke(THREE, opts) {
   [[-3.2, -0.5], [0, -0.5], [3.2, -0.5], [-1.6, 3], [1.6, 3]].forEach(function (t, ti) {
     var tx = t[0], tz = t[1];
     tTop.push([tx, 0.75, tz, 0.55, 0.04, 0.55, 0]);
+    obstacles.push({ t: 'c', x: tx, z: tz, r: 0.6 });
     tEdge.push([tx, 0.73, tz, 0.57, 0.03, 0.57, 0]);
     tPost.push([tx, 0.37, tz, 0.05, 0.74, 0.05, 0]);
     tBase.push([tx, 0.02, tz, 0.3, 0.04, 0.3, 0]);
@@ -1054,6 +1064,8 @@ function createKaraoke(THREE, opts) {
       var cx = tx + Math.cos(a) * 0.82, cz = tz + Math.sin(a) * 0.82;
       var th = Math.atan2(-Math.cos(a), -Math.sin(a)), p;
       cSeat.push([cx, 0.43, cz, 0.44, 0.04, 0.42, th]);
+      seats.push({ id: 'silla-' + (seats.length + 1), kind: 'silla', x: cx, y: 0.485, z: cz, rotY: th, mesa: ti });
+      obstacles.push({ t: 'c', x: cx, z: cz, r: 0.22 });
       cCush.push([cx, 0.465, cz, 0.4, 0.04, 0.38, th]);
       [[-0.19, 0.18], [0.19, 0.18]].forEach(function (l) {
         var q = rotOff(cx, cz, th, l[0], l[1]); cLegF.push([q[0], 0.205, q[1], 0.035, 0.41, 0.035, th]);
@@ -1092,6 +1104,11 @@ function createKaraoke(THREE, opts) {
   }
   function sofa(x, z, rot, len, mat, pil) {
     var g = pivot(x, 0, z, rot);
+    [-1, 1].forEach(function (sg) {
+      var q = rotOff(x, z, rot, sg * len / 4, 0.06);
+      seats.push({ id: 'sofa-' + (seats.length + 1), kind: 'sofá', x: q[0], y: 0.62, z: q[1], rotY: rot });
+    });
+    obstacles.push({ t: 'r', x0: x - 0.5, x1: x + 0.5, z0: z - len / 2, z1: z + len / 2 });
     box(len, 0.36, 0.95, mat, 0, 0.3, 0, g);
     box(len, 0.7, 0.2, mat, 0, 0.8, -0.38, g);
     box(0.2, 0.55, 0.95, mat, -len / 2 + 0.1, 0.55, 0, g);
@@ -1117,6 +1134,7 @@ function createKaraoke(THREE, opts) {
                     [std({ color: 0x2a8a8a, roughness: 0.95 }), std({ color: 0xc85a7a, roughness: 0.95 })]];
   [-3.0, 0.2, 3.4].forEach(function (zz, i) {
     sofa(8.3, zz, -Math.PI / 2, 2.8, mLeather[i % 3], pillowMats[i]);
+    obstacles.push({ t: 'r', x0: 6.45, x1: 7.15, z0: zz - 0.6, z1: zz + 0.6 });
     box(0.7, 0.04, 1.2, mTable, 6.8, 0.45, zz);
     box(0.06, 0.43, 0.06, mMetal, 6.8, 0.22, zz);
     box(0.5, 0.02, 0.9, mTable, 6.8, 0.03, zz);
@@ -1227,6 +1245,7 @@ function createKaraoke(THREE, opts) {
   box(0.1, 2.3, 0.1, mFrame, 2.9, 1.15, 6.93);
   box(0.1, 2.3, 0.1, mFrame, 4.1, 1.15, 6.93);
   box(1.05, 2.2, 0.06, mDoor, 3.5, 1.1, 6.9);
+  var exitHit = box(1.3, 2.3, 0.5, mHit, 3.5, 1.15, 6.75);   // invisible: detecta el toque de salida
   box(0.4, 0.8, 0.02, mGlass, 3.5, 1.5, 6.86);
   box(0.46, 0.06, 0.03, mFrame, 3.5, 1.93, 6.87);
   box(0.46, 0.06, 0.03, mFrame, 3.5, 1.07, 6.87);
@@ -1257,6 +1276,7 @@ function createKaraoke(THREE, opts) {
   var leaves = [], pots = [], soil = [], rims = [];
   [[7.0, 6.4], [-8.3, -4.8], [-5.5, 6.3], [0, 6.4]].forEach(function (p) {
     pots.push([p[0], 0.25, p[1], 0.24, 0.5, 0.24, 0]);
+    obstacles.push({ t: 'c', x: p[0], z: p[1], r: 0.3 });
     rims.push([p[0], 0.5, p[1], 0.275, 0.05, 0.275, 0]);
     soil.push([p[0], 0.52, p[1], 0.24, 0.03, 0.24, 0]);
     for (var l = 0; l < 10; l++) {
@@ -1316,6 +1336,83 @@ function createKaraoke(THREE, opts) {
   }
   if (quality !== 'high') mergeStatic();
 
+  // Zona transitable, obstáculos y escenario (para mover avatares sin atravesar muebles)
+  [[-9, -6.32, -2.75, 5.6], [-9, -8.1, 5.6, 6.6], [6.0, 8.0, -6.15, -5.25], [-7.5, -6.5, -6.8, -6.2],
+   [4.95, 5.45, -6.55, -6.05], [-5.45, -4.95, -6.55, -6.05], [3.1, 3.9, -6.75, -6.05], [-3.9, -3.1, -6.75, -6.05], [8.4, 9, 5.4, 6.4]]
+    .forEach(function (r) { obstacles.push({ t: 'r', x0: r[0], x1: r[1], z0: r[2], z1: r[3] }); });
+  [[5.6, 6.5, 0.25], [2.4, 6.6, 0.2], [-2.8, -4.0, 0.25], [2.8, -4.0, 0.25]]
+    .forEach(function (c) { obstacles.push({ t: 'c', x: c[0], z: c[1], r: c[2] }); });
+  var nav = {
+    bounds: { minX: -8.9, maxX: 8.9, minZ: -6.9, maxZ: 6.9 },
+    stage: { x0: -4, x1: 4.9, z0: -7, z1: -4.6, y: 0.35 },
+    obstacles: obstacles,
+    // Devuelve la posición corregida {x, z} para un cuerpo circular de radio r (empuja fuera de muebles y paredes)
+    collide: function (x, z, r) {
+      var b = nav.bounds, i, o;
+      function clampB() { x = Math.min(b.maxX - r, Math.max(b.minX + r, x)); z = Math.min(b.maxZ - r, Math.max(b.minZ + r, z)); }
+      clampB();
+      for (var pass = 0; pass < 8; pass++) {
+        for (i = 0; i < obstacles.length; i++) {
+          o = obstacles[i];
+          if (o.t === 'c') {
+            var dx = x - o.x, dz = z - o.z, d = Math.sqrt(dx * dx + dz * dz), m = o.r + r;
+            if (d < m) {
+              if (d < 1e-6) { x = o.x + m; } else { x = o.x + dx / d * m; z = o.z + dz / d * m; }
+            }
+          } else {
+            var cx = Math.min(o.x1, Math.max(o.x0, x)), cz = Math.min(o.z1, Math.max(o.z0, z));
+            var ex = x - cx, ez = z - cz, e = Math.sqrt(ex * ex + ez * ez);
+            if (e < r) {
+              if (e > 1e-6) { x = cx + ex / e * r; z = cz + ez / e * r; }
+              else {   // el centro quedó dentro: salir por el borde más cercano
+                var dl = x - o.x0, dr = o.x1 - x, dt = z - o.z0, db = o.z1 - z, mn = Math.min(dl, dr, dt, db);
+                if (mn === dl) x = o.x0 - r; else if (mn === dr) x = o.x1 + r; else if (mn === dt) z = o.z0 - r; else z = o.z1 + r;
+              }
+            }
+          }
+        }
+        clampB();
+      }
+      return { x: x, z: z };
+    },
+    // Altura del piso en ese punto (el escenario está elevado)
+    floorY: function (x, z) {
+      var st = nav.stage;
+      return (x >= st.x0 && x <= st.x1 && z >= st.z0 && z <= st.z1) ? st.y : 0;
+    }
+  };
+
+  // Libera la memoria: geometrías, materiales, texturas (y sus lienzos) y quita el salón de la escena
+  function dispose() {
+    var geos = [], mats = [], texs = [];
+    group.traverse(function (o) {
+      if (o.geometry && geos.indexOf(o.geometry) < 0) geos.push(o.geometry);
+      var m = o.material;
+      (Array.isArray(m) ? m : (m ? [m] : [])).forEach(function (mm) { if (mats.indexOf(mm) < 0) mats.push(mm); });
+      if (o.isInstancedMesh && typeof o.dispose === 'function') o.dispose();
+    });
+    geos.forEach(function (g) { if (g.dispose) g.dispose(); });
+    mats.forEach(function (m) {
+      ['map', 'emissiveMap'].forEach(function (k) { if (m[k] && texs.indexOf(m[k]) < 0) texs.push(m[k]); });
+      if (m.dispose) m.dispose();
+    });
+    texs.forEach(function (t) {
+      var c = t.image;
+      if (t.dispose) t.dispose();
+      if (c && typeof c.getContext === 'function') { c.width = 0; c.height = 0; }   // libera la memoria del lienzo
+    });
+    if (group.parent) group.parent.remove(group);
+    group.userData.tablets = [];
+    group.userData.exitDoor = [];
+    group.userData.screen = null;
+    group.userData.seats = [];
+  }
+
+  group.userData.seats = seats;
+  group.userData.micSpots = [-1.6, 0, 1.6].map(function (mx, i) { return { id: 'mic-' + (i + 1), x: mx, y: 0.35, z: -5.4 }; });
+  group.userData.nav = nav;
+  group.userData.exitDoor = [exitHit];
+  group.userData.dispose = dispose;
   group.userData.quality = quality;
   group.userData.setQuality = setLights;
   group.userData.tablets = tabletMeshes.filter(Boolean);
@@ -1329,6 +1426,7 @@ function createKaraoke(THREE, opts) {
   };
 
   return {
-    group: group
+    group: group,
+    dispose: dispose
   };
 }
