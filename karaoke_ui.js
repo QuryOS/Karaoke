@@ -1,8 +1,8 @@
 /**
  * Interfaz de la tableta del karaoke
  * 
- * Opciones: 1) lista de canciones leída de musica/songs.json, 2) subir una canción (Litterbox, archivos temporales), 3) sala con código grupal (P2P)
- * Incluye: aviso de derechos de autor antes de subir y antes de entrar a una sala, reproductor, video y letra sincronizada (.lrc) en las pantallas del lugar
+ * Opciones: 1) lista de canciones leída de musica/songs.json, 2) agregar música (cargar un archivo de texto con una lista, o pegar un enlace), 3) sala con código grupal (P2P)
+ * Incluye: aviso de derechos de autor antes de agregar música y antes de entrar a una sala, reproductor, video y letra sincronizada (.lrc) en las pantallas del lugar
  * 
  * Uso:
  *   const ui = createKaraokeUI({ screen: karaoke.group.userData.screen });
@@ -10,7 +10,7 @@
  *   ui.open();                                                     // o abrirlo desde un botón
  * 
  * Opciones (todas opcionales):
- *   catalogUrl, basePath, screen, reportEmail, maxUploadMB, peerOptions, playerName, autoAcceptRequests, videoFps
+ *   catalogUrl, basePath, screen, reportEmail, musicPageUrl, qualityControl, peerOptions, playerName, autoAcceptRequests, videoFps
  * 
  * Requiere (solo para salas por internet): PeerJS → <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js">
  * Sin PeerJS las salas funcionan en modo local de pruebas (dos pestañas del mismo navegador).
@@ -44,6 +44,49 @@ function krkParseExpiry(v) {
   if (v == null || v === '') return null;
   var t = typeof v === 'number' ? v : Date.parse(v);
   return isNaN(t) ? null : t;
+}
+function krkHash(str) {
+  var h = 5381;
+  for (var i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+function krkIsHttp(t) { return /^https?:\/\/\S+$/i.test(String(t || '').trim()); }
+// Lee una lista de canciones desde texto. Acepta:
+//  - Texto: una canción por línea → Título | enlace | portada (opcional) | letra (opcional)   (# o // = comentario)
+//  - JSON: [ { titulo, video|audio|url, artista, portada, letra, expira } ]  o  { canciones: [ ... ] }
+// Devuelve { songs, skipped, error }
+function krkParseList(text) {
+  var out = { songs: [], skipped: 0, error: '' };
+  var src = String(text || '').replace(/^\uFEFF/, '').trim();
+  function push(titulo, media, artista, portada, letra, expira) {
+    titulo = String(titulo || '').trim().slice(0, 80);
+    media = String(media || '').trim();
+    if (!titulo || !krkIsHttp(media)) { out.skipped++; return; }
+    if (out.songs.length >= 500) { out.skipped++; return; }
+    portada = krkIsHttp(portada) ? String(portada).trim() : null;
+    letra = krkIsHttp(letra) ? String(letra).trim() : null;
+    out.songs.push({ id: 'l-' + krkHash(media), titulo: titulo, artista: String(artista || '').slice(0, 60), audio: media, portada: portada, letra: letra, expira: krkParseExpiry(expira), propia: true });
+  }
+  if (!src) { out.error = 'El archivo está vacío.'; return out; }
+  if (src.charAt(0) === '[' || src.charAt(0) === '{') {
+    var data;
+    try { data = JSON.parse(src); } catch (e) { out.error = 'El archivo tiene un error de formato (JSON inválido). Revisa comas y comillas.'; return out; }
+    var list = Array.isArray(data) ? data : (data && (data.canciones || data.songs || data.lista)) || [];
+    if (!Array.isArray(list)) list = [];
+    list.forEach(function (s) {
+      if (!s || typeof s !== 'object') { out.skipped++; return; }
+      push(s.titulo || s.title || s.nombre, s.video || s.audio || s.url || s.enlace, s.artista || s.artist, s.portada || s.cover, s.letra || s.lyrics, s.expira);
+    });
+    return out;
+  }
+  src.split(/\r?\n/).forEach(function (line) {
+    line = line.trim();
+    if (!line || line.charAt(0) === '#' || line.slice(0, 2) === '//') return;
+    var parts = line.split('|').map(function (x) { return x.trim(); });
+    if (parts.length < 2) { out.skipped++; return; }
+    push(parts[0], parts[1], '', parts[2], parts[3], '');
+  });
+  return out;
 }
 function krkResolve(base, path) {
   if (!path) return '';
@@ -131,15 +174,15 @@ var KRK_CSS = [
 ].join('\n');
 
 var KRK_GATE = {
-  upload: {
-    title: 'Antes de subir una canción',
+  add: {
+    title: 'Antes de agregar música',
     items: [
-      'Sube solo música o videos que sean tuyos o para los que tengas permiso de su autor.',
-      'No subas canciones, videos ni letras de otras personas sin autorización.',
-      'El archivo se guarda en un servicio temporal y se borra solo (entre 1 y 72 horas). Aquí no se revisa lo que se sube.',
-      'Todos los que estén en tu sala podrán escuchar y ver lo que compartas.'
+      'Agrega solo música o videos que sean tuyos, de licencia libre o para los que tengas permiso de su autor.',
+      'No agregues canciones, videos ni letras de otras personas sin autorización.',
+      'Todos los que estén en tu sala podrán escuchar y ver lo que compartas.',
+      'Aquí no se revisa el contenido de los enlaces: la responsabilidad es de quien los agrega.'
     ],
-    check: 'Confirmo que tengo permiso para compartir este contenido.',
+    check: 'Confirmo que tengo permiso para usar este contenido.',
     ok: 'Continuar'
   },
   room: {
@@ -162,8 +205,7 @@ function createKaraokeUI(opts) {
     basePath: opts.basePath != null ? opts.basePath : 'musica/',
     screen: opts.screen || null,
     reportEmail: opts.reportEmail || '',
-    uploadUrl: opts.uploadUrl || 'https://litterbox.catbox.moe/resources/internals/api.php',
-    maxUploadMB: opts.maxUploadMB || 100,
+    musicPageUrl: opts.musicPageUrl || '',
     peerOptions: opts.peerOptions || {},
     tapRange: opts.tapRange || 12,
     videoFps: opts.videoFps || 24,
@@ -225,7 +267,7 @@ function createKaraokeUI(opts) {
   sheet.appendChild(body);
 
   var screens = {};
-  ['home', 'gate', 'list', 'upload', 'room', 'player'].forEach(function (n) {
+  ['home', 'gate', 'list', 'add', 'room', 'player'].forEach(function (n) {
     screens[n] = el('div', { class: 'k-screen' });
     body.appendChild(screens[n]);
   });
@@ -242,7 +284,7 @@ function createKaraokeUI(opts) {
   root.appendChild(sheet);
   document.body.appendChild(root);
 
-  var titles = { home: 'Karaoke', gate: 'Aviso', list: 'Lista de canciones', upload: 'Subir una canción', room: 'Sala', player: 'Reproductor' };
+  var titles = { home: 'Karaoke', gate: 'Aviso', list: 'Lista de canciones', add: 'Agregar música', room: 'Sala', player: 'Reproductor' };
   function go(name, noPush) {
     if (!noPush && stack[stack.length - 1] !== name) stack.push(name);
     Object.keys(screens).forEach(function (k) { screens[k].classList.toggle('k-on', k === name); });
@@ -251,6 +293,7 @@ function createKaraokeUI(opts) {
     if (name === 'list') renderList();
     if (name === 'player') renderPlayer();
     if (name === 'room') renderRoom();
+    if (name === 'add') refreshAddInfo();
     body.scrollTop = 0;
   }
   function back() {
@@ -278,9 +321,18 @@ function createKaraokeUI(opts) {
   }
   screens.home.appendChild(el('div', { class: 'k-home' }, [
     tile('#d4a24c', '\u266B', 'Lista de canciones', 'Elige una canción y canta', function () { go('list'); }),
-    tile('#2a8a8a', '\u2191', 'Subir una canción', 'Archivo temporal de 1 a 72 horas', function () { openGate('upload', function () { go('upload'); }); }),
+    tile('#2a8a8a', '+', 'Agregar música', 'Carga una lista o pega un enlace', function () { openGate('add', function () { go('add'); }); }),
     tile('#c85a7a', '#', 'Sala con código', 'Canta con tus amigos', function () { openGate('room', function () { go('room'); }); })
   ]));
+  if (opts.qualityControl) {
+    var qBtn = el('button', { class: 'k-ghost', style: 'margin-top:16px;width:100%', onclick: function () {
+      var msg = opts.qualityControl.cycle();
+      qBtn.textContent = 'Calidad gráfica: ' + opts.qualityControl.label();
+      toast(msg);
+    } });
+    qBtn.textContent = 'Calidad gráfica: ' + opts.qualityControl.label();
+    screens.home.appendChild(qBtn);
+  }
 
   // ---------- Pantalla: aviso de derechos ----------
   var gateTitle = el('h3', { style: 'margin:0 0 6px;color:#ffd9a0;font-size:20px' });
@@ -394,130 +446,87 @@ function createKaraokeUI(opts) {
       var card = el('button', { class: 'k-card' + (off ? ' k-off' : ''), onclick: function () { chooseSong(s); } }, [
         cv,
         el('p', { class: 'k-ct', text: s.titulo }),
-        el('p', { class: 'k-cs', text: s.propia ? 'Tu subida' : (s.artista || '') })
+        el('p', { class: 'k-cs', text: s.propia ? (s.artista || 'Agregada por ti') : (s.artista || '') })
       ]);
       gridEl.appendChild(card);
     });
   }
 
-  // ---------- Pantalla: subir ----------
-  var fileIn = el('input', { class: 'k-in', type: 'file', accept: 'audio/*,video/*' });
-  var nameIn = el('input', { class: 'k-in', type: 'text', maxlength: '80', placeholder: 'Nombre de la canción' });
-  var timeSel = el('select', { class: 'k-in' }, [
-    el('option', { value: '1', text: '1 hora' }), el('option', { value: '12', text: '12 horas' }),
-    el('option', { value: '24', text: '24 horas', selected: 'selected' }), el('option', { value: '72', text: '72 horas' })
-  ]);
-  timeSel.value = '24';
-  var linkIn = el('input', { class: 'k-in', type: 'url', placeholder: 'https://... (enlace directo a un mp3/mp4)' });
-  var upBar = el('i');
-  var upBarWrap = el('div', { class: 'k-bar', style: 'display:none' }, [upBar]);
-  var upMsg = el('p', { class: 'k-muted' });
-  var upBtn = el('button', { class: 'k-btn', text: 'Subir', onclick: function () { doUpload(); } });
-  fileIn.addEventListener('change', function () {
-    var f = fileIn.files && fileIn.files[0];
-    if (f && !nameIn.value) nameIn.value = f.name.replace(/\.[^.]+$/, '').slice(0, 80);
-  });
+  // ---------- Pantalla: agregar música (lista en archivo de texto o enlace directo) ----------
+  var MAX_MINE = 500;
+  var addMsg = el('p', { class: 'k-muted' });
+  var listFileIn = el('input', { class: 'k-in', type: 'file', accept: '.txt,.json,text/plain,application/json' });
+  var linkName = el('input', { class: 'k-in', type: 'text', maxlength: '80', placeholder: 'Nombre de la canción' });
+  var linkIn = el('input', { class: 'k-in', type: 'url', placeholder: 'https://... (enlace directo a un mp3 o mp4)' });
+  var visitBtn = el('button', { class: 'k-btn', text: 'Visitar página de músicas', onclick: function () { openMusicPage(); } });
+  var linkBtn = el('button', { class: 'k-btn', text: 'Agregar', onclick: function () { addLink(); } });
+  var viewBtn = el('button', { class: 'k-ghost', text: 'Ver mi lista', onclick: function () { go('list'); } });
+  var clearBtn = el('button', { class: 'k-ghost', text: 'Borrar lo que agregué', onclick: function () { clearMine(); } });
+  listFileIn.addEventListener('change', function () { readListFile(); });
   [
-    el('label', { text: 'Archivo de audio o video' }), fileIn,
-    el('label', { text: 'Nombre' }), nameIn,
-    el('label', { text: 'Duración del archivo en el servicio' }), timeSel,
-    el('label', { text: 'O pega un enlace directo (si la subida falla)' }), linkIn,
-    el('div', { class: 'k-row' }, [upBtn]), upBarWrap, upMsg,
-    el('p', { class: 'k-muted', text: 'Tamaño máximo en este juego: ' + cfg.maxUploadMB + ' MB. El servicio borra el archivo cuando termina el tiempo elegido.' })
-  ].forEach(function (n) { screens.upload.appendChild(n); });
+    el('p', { class: 'k-muted', text: '1. Visita la página de músicas y descarga el paquete (es un archivo de texto con una lista de canciones libres de derechos).' }),
+    el('div', { class: 'k-row' }, [visitBtn]),
+    el('label', { text: '2. Carga aquí el archivo que descargaste (.txt o .json)' }), listFileIn,
+    el('label', { text: 'O agrega una sola canción con un enlace' }), linkName, el('div', { style: 'height:8px' }), linkIn,
+    el('div', { class: 'k-row' }, [linkBtn]),
+    addMsg,
+    el('div', { class: 'k-row' }, [viewBtn, clearBtn]),
+    el('p', { class: 'k-muted', style: 'font-size:13px', text: 'Formato del archivo de texto (una canción por línea): Título | enlace | portada (opcional) | letra (opcional). También se acepta una lista en .json.' })
+  ].forEach(function (n) { screens.add.appendChild(n); });
 
-  function uploadFile(file, hours, onProgress, cb) {
-    var fd = new FormData();
-    fd.append('reqtype', 'fileupload');
-    fd.append('time', hours + 'h');
-    fd.append('fileToUpload', file, file.name);
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', cfg.uploadUrl);
-    xhr.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-    xhr.onload = function () {
-      var t = String(xhr.responseText || '').trim();
-      if (xhr.status >= 200 && xhr.status < 300 && /^https?:\/\//i.test(t)) cb(null, t);
-      else cb(new Error(t.slice(0, 120) || ('HTTP ' + xhr.status)));
-    };
-    xhr.onerror = function () { diagnoseUpload(function (msg) { cb(new Error(msg)); }); };
-    xhr.send(fd);
+  function setAddMsg(text, isErr) { addMsg.textContent = text || ''; addMsg.className = isErr ? 'k-err' : 'k-muted'; }
+  function refreshAddInfo() { setAddMsg(mine.length ? 'Tienes ' + mine.length + ' canción(es) agregada(s).' : ''); }
+  function openMusicPage() {
+    if (!cfg.musicPageUrl) { toast('Todavía no hay una página de músicas configurada.'); return; }
+    try { window.open(cfg.musicPageUrl, '_blank', 'noopener'); } catch (e) { window.location.href = cfg.musicPageUrl; }
   }
-  // Cuando falla la subida, averigua si el servicio es alcanzable (entonces es un bloqueo CORS), si no responde o si tarda
-  function diagnoseUpload(cb) {
-    var origin = String(cfg.uploadUrl).replace(/^(https?:\/\/[^\/]+).*$/, '$1/');
-    var finished = false;
-    function finish(state) {
-      if (finished) return;
-      finished = true;
-      cb(state === 'cors'
-        ? 'el servicio responde, pero el navegador bloqueó la subida (CORS). Hace falta un intermediario (archivo worker_subida.js) o pegar un enlace directo.'
-        : state === 'slow'
-          ? 'el servicio tardó demasiado en responder; puede estar saturado o tu conexión es lenta. Inténtalo de nuevo.'
-          : 'no se pudo llegar al servicio de archivos temporales. Puede estar bloqueado en tu red o caído; prueba con otra red (datos móviles o Wi-Fi).');
-    }
-    setTimeout(function () { finish('slow'); }, 12000);
-    try { fetch(origin, { mode: 'no-cors', cache: 'no-store' }).then(function () { finish('cors'); }, function () { finish('net'); }); }
-    catch (e) { finish('net'); }
-  }
-  function makeThumb(file, cb) {
-    if (!file || !/^video\//.test(file.type || '')) return cb(null);
-    var done = false, url = null;
-    function fin(v) { if (done) return; done = true; if (url) { try { URL.revokeObjectURL(url); } catch (e) {} } cb(v); }
-    try {
-      var v = document.createElement('video');
-      v.muted = true; v.preload = 'metadata';
-      url = URL.createObjectURL(file);
-      v.onloadeddata = function () { try { v.currentTime = Math.min(1, (v.duration || 2) / 2); } catch (e) { fin(null); } };
-      v.onseeked = function () {
-        try {
-          var c = document.createElement('canvas'); c.width = 320; c.height = 180;
-          c.getContext('2d').drawImage(v, 0, 0, 320, 180);
-          fin(c.toDataURL('image/jpeg', 0.6));
-        } catch (e) { fin(null); }
-      };
-      v.onerror = function () { fin(null); };
-      v.src = url;
-      setTimeout(function () { fin(null); }, 5000);
-    } catch (e) { fin(null); }
-  }
-  function addMine(song) {
-    mine.unshift(song);
-    saveMine();
-    renderList();
-    upMsg.className = 'k-muted';
-    upMsg.textContent = 'Lista: "' + song.titulo + '" ' + (krkExpiryLabel(song.expira) ? '(' + krkExpiryLabel(song.expira).toLowerCase() + ')' : '') + '.';
-    upBtn.disabled = false;
-    toast('Canción agregada a tu lista');
-    clear(upBarWrap); upBarWrap.style.display = 'none';
-    upBarWrap.appendChild(upBar);
-    var go1 = el('button', { class: 'k-btn', text: 'Reproducir ahora', onclick: function () { chooseSong(song); } });
-    var go2 = el('button', { class: 'k-ghost', text: 'Ver lista', onclick: function () { go('list'); } });
-    upMsg.appendChild(el('div', { class: 'k-row' }, [go1, go2]));
-  }
-  function doUpload() {
-    var title = (nameIn.value || '').trim().slice(0, 80);
-    var link = (linkIn.value || '').trim();
-    var file = fileIn.files && fileIn.files[0];
-    var hours = parseInt(timeSel.value, 10) || 24;
-    upMsg.className = 'k-muted'; upMsg.textContent = '';
-    if (link) {
-      if (!/^https?:\/\//i.test(link)) { upMsg.className = 'k-err'; upMsg.textContent = 'El enlace debe empezar con http:// o https://'; return; }
-      addMine({ id: 'u-' + Date.now(), titulo: title || 'Canción', artista: '', audio: link, portada: null, letra: null, expira: null, propia: true });
-      linkIn.value = ''; nameIn.value = '';
-      return;
-    }
-    if (!file) { upMsg.className = 'k-err'; upMsg.textContent = 'Elige un archivo o pega un enlace.'; return; }
-    if (file.size > cfg.maxUploadMB * 1048576) { upMsg.className = 'k-err'; upMsg.textContent = 'El archivo pesa más de ' + cfg.maxUploadMB + ' MB.'; return; }
-    upBtn.disabled = true;
-    upBarWrap.style.display = 'block'; upBar.style.width = '0%';
-    upMsg.textContent = 'Subiendo...';
-    uploadFile(file, hours, function (p) { upBar.style.width = Math.round(p * 100) + '%'; }, function (err, url) {
-      if (err) { upBtn.disabled = false; upBarWrap.style.display = 'none'; upMsg.className = 'k-err'; upMsg.textContent = 'No se pudo subir: ' + err.message; return; }
-      makeThumb(file, function (thumb) {
-        addMine({ id: 'u-' + Date.now(), titulo: title || file.name, artista: '', audio: url, portada: thumb, letra: null, expira: Date.now() + hours * 3600000, propia: true });
-        fileIn.value = ''; nameIn.value = '';
-      });
+  // Agrega canciones a "mi lista" sin repetir enlaces; conserva el orden del archivo
+  function addSongs(list) {
+    var have = {};
+    mine.forEach(function (s) { have[s.audio] = true; });
+    var fresh = [], dup = 0;
+    list.forEach(function (s) {
+      if (have[s.audio]) { dup++; return; }
+      if (mine.length + fresh.length >= MAX_MINE) return;
+      have[s.audio] = true;
+      fresh.push(s);
     });
+    if (fresh.length) { mine = fresh.concat(mine); saveMine(); renderList(); }
+    return { added: fresh.length, dup: dup };
+  }
+  function readListFile() {
+    var f = listFileIn.files && listFileIn.files[0];
+    if (!f) return;
+    if (f.size > 512 * 1024) { setAddMsg('El archivo es demasiado grande (máximo 512 KB).', true); listFileIn.value = ''; return; }
+    var fr = new FileReader();
+    fr.onload = function () {
+      var r = krkParseList(String(fr.result || ''));
+      listFileIn.value = '';
+      if (!r.songs.length) { setAddMsg(r.error || 'No se encontró ninguna canción válida en ese archivo (cada enlace debe empezar con https://).', true); return; }
+      var res = addSongs(r.songs);
+      setAddMsg('Listo: ' + res.added + ' canción(es) agregada(s)' + (res.dup ? ', ' + res.dup + ' repetida(s) omitida(s)' : '') + (r.skipped ? ', ' + r.skipped + ' línea(s) ignorada(s)' : '') + '.');
+      if (res.added) toast('Lista cargada: ' + res.added + ' canciones');
+    };
+    fr.onerror = function () { setAddMsg('No se pudo leer el archivo.', true); };
+    fr.readAsText(f);
+  }
+  function addLink() {
+    var link = (linkIn.value || '').trim(), title = (linkName.value || '').trim().slice(0, 80);
+    if (!krkIsHttp(link)) { setAddMsg('El enlace debe empezar con http:// o https://', true); return; }
+    var res = addSongs([{ id: 'l-' + krkHash(link), titulo: title || 'Canción', artista: '', audio: link, portada: null, letra: null, expira: null, propia: true }]);
+    if (res.dup) { setAddMsg('Ese enlace ya estaba en tu lista.', true); return; }
+    setAddMsg('Canción agregada.');
+    linkIn.value = ''; linkName.value = '';
+    toast('Canción agregada a tu lista');
+  }
+  var clearArmed = false, clearTimer = null;
+  function disarmClear() { clearArmed = false; clearBtn.textContent = 'Borrar lo que agregué'; if (clearTimer) clearTimeout(clearTimer); }
+  function clearMine() {
+    if (!mine.length) { toast('No hay nada que borrar'); return; }
+    if (!clearArmed) { clearArmed = true; clearBtn.textContent = 'Toca otra vez para confirmar'; clearTimer = setTimeout(disarmClear, 4000); return; }
+    disarmClear();
+    mine = []; saveMine(); renderList();
+    setAddMsg('Se borró lo que habías agregado.');
   }
 
   // ---------- Reproductor y pantallas del lugar ----------
@@ -1031,12 +1040,13 @@ function createKaraokeUI(opts) {
     detach: detach,
     destroy: destroy,
     setScreen: function (s) { cfg.screen = s; drawScreen(); },
+    setVideoFps: function (n) { if (n > 0) cfg.videoFps = n; },
     reload: loadCatalog,
     state: function () { return { song: cur && cur.song, room: room && { code: room.code, role: room.role, connected: room.connected, mode: room.mode } }; }
   };
 }
 
 createKaraokeUI.utils = {
-  parseLRC: krkParseLRC, lineAt: krkLineAt, fmtTime: krkFmtTime, expiryLabel: krkExpiryLabel,
+  parseList: krkParseList, parseLRC: krkParseLRC, lineAt: krkLineAt, fmtTime: krkFmtTime, expiryLabel: krkExpiryLabel,
   makeCode: krkMakeCode, normalizeCode: krkNormalizeCode, resolve: krkResolve, parseExpiry: krkParseExpiry
 };
