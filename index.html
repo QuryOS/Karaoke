@@ -5,71 +5,202 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Karaoke</title>
 <style>
-  html,body{margin:0;height:100%;background:#0b0710;overflow:hidden}
+  html,body{margin:0;height:100%;background:#0b0710;overflow:hidden;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
   canvas{display:block;touch-action:none}
-  #hint{position:fixed;left:0;right:0;bottom:14px;text-align:center;color:#ffd9a0;font:14px system-ui,sans-serif;pointer-events:none;text-shadow:0 1px 3px #000}
-  #menu{position:fixed;top:12px;right:12px;z-index:5;padding:10px 14px;border:0;border-radius:12px;background:#d4a24c;color:#1a1020;font:700 15px system-ui,sans-serif}
+  #hint{position:fixed;left:0;right:0;bottom:14px;text-align:center;color:#ffd9a0;font-size:14px;pointer-events:none;text-shadow:0 1px 3px #000}
+  .top{position:fixed;top:12px;z-index:5;padding:10px 14px;border:0;border-radius:12px;background:#d4a24c;color:#1a1020;font:700 15px system-ui,sans-serif}
+  #menu{right:12px}
+  #mode{left:12px}
+  #joy{position:fixed;left:22px;bottom:56px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,.10);border:2px solid rgba(255,255,255,.25);z-index:5;touch-action:none;display:none}
+  #knob{position:absolute;left:35px;top:35px;width:60px;height:60px;border-radius:50%;background:rgba(212,162,76,.85);pointer-events:none}
+  #loading{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:linear-gradient(160deg,#1a0f2a,#2a1233 60%,#3a1530);color:#ffd9a0;transition:opacity .4s}
+  #loading h1{margin:0;font-size:34px;letter-spacing:2px}
+  #load-img{max-width:60vw;max-height:30vh;border-radius:16px}
+  .bar{width:min(70vw,320px);height:10px;border-radius:5px;background:rgba(255,255,255,.15);overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:#d4a24c;transition:width .25s}
+  #load-txt{margin:0;font-size:14px;color:#b8a9c9}
+  #exitmsg{position:fixed;inset:0;z-index:30;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#12091a;color:#f4ecdc;text-align:center;padding:24px}
+  #exitmsg button{padding:12px 20px;border:0;border-radius:12px;background:#d4a24c;color:#1a1020;font:700 16px system-ui,sans-serif}
 </style>
 </head>
 <body>
-<button id="menu">&#9835; Menú</button>
-<div id="hint">Toca una tableta para abrir el menú · arrastra para mirar alrededor</div>
+<div id="loading">
+  <img id="load-img" alt="" hidden>
+  <h1>Karaoke</h1>
+  <div class="bar"><i id="load-bar"></i></div>
+  <p id="load-txt">Cargando...</p>
+</div>
+<button id="mode" class="top">Órbita</button>
+<button id="menu" class="top">&#9835; Menú</button>
+<div id="joy"><div id="knob"></div></div>
+<div id="hint">Joystick para caminar · arrastra para mirar · toca una tableta para abrir el menú</div>
+<div id="exitmsg">
+  <h2>Saliste del karaoke</h2>
+  <p>Aquí volverías al lobby de tu juego. Música, sala y memoria ya se liberaron.</p>
+  <button id="again">Volver a entrar</button>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1/qrcode.js"></script>
 <script src="karaoke.js"></script>
 <script src="karaoke_ui.js"></script>
 <script src="karaoke_quality.js"></script>
 <script>
-  // 1) Calidad según el teléfono (se recuerda entre visitas)
-  var qinfo = krqDetect();
+(function () {
+  var LOADING_IMAGE = '';   // ruta de tu imagen de carga (ej. 'cargando.png'); vacío = solo el título
+  var LOBBY_URL = '';       // dirección de tu lobby; vacío = muestra una pantalla de demostración
 
-  var renderer = new THREE.WebGLRenderer({ antialias: qinfo.tier !== 'low', powerPreference: 'high-performance' });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
-  document.body.appendChild(renderer.domElement);
+  var $ = function (id) { return document.getElementById(id); };
+  var bar = $('load-bar'), ltxt = $('load-txt'), cleanups = [];
+  function on(t, type, fn) { t.addEventListener(type, fn); cleanups.push(function () { t.removeEventListener(type, fn); }); }
+  function progress(p, t) { bar.style.width = p + '%'; if (t) ltxt.textContent = t; }
+  // Deja que el navegador pinte la pantalla de carga antes de seguir con el trabajo pesado
+  function frame() { return new Promise(function (r) { requestAnimationFrame(function () { setTimeout(r, 0); }); }); }
+  function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
 
-  var scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0710);
-  var camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 60);
-  camera.position.set(0, 1.7, 5.8);
+  async function main() {
+    if (LOADING_IMAGE) { var im = $('load-img'); im.src = LOADING_IMAGE; im.hidden = false; }
+    progress(5, 'Preparando...'); await frame();
 
-  var controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 1.4, -3);
-  controls.enableDamping = true;
-  controls.minDistance = 0.5;
-  controls.maxDistance = 11;
-  controls.update();
-
-  var karaoke = createKaraoke(THREE, { quality: qinfo.tier });
-  scene.add(karaoke.group);
-
-  // 2) Ajuste automático: baja la resolución y las luces si el juego va lento
-  var krq = createKaraokeQuality({ renderer: renderer, karaoke: karaoke.group, info: qinfo });
-
-  var ui = createKaraokeUI({
-    screen: karaoke.group.userData.screen,   // las pantallas del lugar siguen a la tableta
-    catalogUrl: 'songs.json',                 // la lista de canciones está junto a index.html
-    basePath: '',
-    musicPageUrl: '',                         // pon aquí la dirección de tu página de músicas
-    reportEmail: '',                          // pon tu correo para activar "Reportar contenido"
-    qualityControl: krq                       // botón "Calidad gráfica" en el menú
-  });
-  krq.setUi(ui);
-  krq.start();
-  ui.attachTo(THREE, camera, renderer.domElement, karaoke.group);
-  document.getElementById('menu').addEventListener('click', function () { ui.open(); });
-
-  window.addEventListener('resize', function () {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
+    var qinfo = krqDetect();
+    var renderer = new THREE.WebGLRenderer({ antialias: qinfo.tier !== 'low', powerPreference: 'high-performance' });
     renderer.setSize(window.innerWidth, window.innerHeight);
-  });
-  renderer.setAnimationLoop(function () {
-    controls.update();
-    renderer.render(scene, camera);
-  });
+    if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
+    var canvas = renderer.domElement;
+    document.body.appendChild(canvas);
+    var scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0710);
+    var camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 60);
+    var controls = new THREE.OrbitControls(camera, canvas);
+    controls.enableDamping = true; controls.minDistance = 0.5; controls.maxDistance = 11;
+
+    progress(25, 'Construyendo el salón...'); await frame();
+    var karaoke = createKaraoke(THREE, { quality: qinfo.tier });
+    scene.add(karaoke.group);
+    var nav = karaoke.group.userData.nav;
+    var krq = createKaraokeQuality({ renderer: renderer, karaoke: karaoke.group, info: qinfo });
+
+    progress(65, 'Preparando el menú...'); await frame();
+    var exited = false, ui = null;
+    ui = createKaraokeUI({
+      screen: karaoke.group.userData.screen,   // las pantallas del lugar siguen a la tableta
+      catalogUrl: 'songs.json',                 // la lista de canciones está junto a index.html
+      basePath: '',
+      musicPageUrl: '',                         // dirección de tu página de músicas
+      reportEmail: '',                          // tu correo para "Reportar contenido"
+      qualityControl: krq,                      // botón "Calidad gráfica" en el menú
+      onExit: exitKaraoke                       // puerta de salida y botón "Salir del karaoke"
+    });
+    krq.setUi(ui);
+    krq.start();
+    ui.attachTo(THREE, camera, canvas, karaoke.group);
+    on($('menu'), 'click', function () { ui.open(); });
+
+    progress(85, 'Cargando canciones...');
+    await Promise.race([ui.ready, new Promise(function (r) { setTimeout(r, 4000); })]);
+
+    // ---- Caminar por el salón: joystick, arrastrar para mirar, teclas WASD ----
+    var walk = { on: true, x: 0, z: 5.8, yaw: 0, pitch: 0, jx: 0, jy: 0 }, keys = {};
+    var joy = $('joy'), knob = $('knob'), modeBtn = $('mode');
+    camera.rotation.order = 'YXZ';
+    function applyCam() {
+      camera.position.set(walk.x, 1.6 + nav.floorY(walk.x, walk.z), walk.z);
+      camera.rotation.set(walk.pitch, walk.yaw, 0);
+    }
+    function setMode(w) {
+      if (w === walk.on) return;
+      var d = new THREE.Vector3(); camera.getWorldDirection(d);
+      if (w) {
+        var q = nav.collide(camera.position.x, camera.position.z, 0.3);
+        walk.x = q.x; walk.z = q.z; walk.yaw = Math.atan2(-d.x, -d.z); walk.pitch = clamp(Math.asin(d.y), -1.2, 1.2);
+        controls.enabled = false; joy.style.display = 'block'; modeBtn.textContent = 'Órbita'; applyCam();
+      } else {
+        controls.enabled = true; controls.target.copy(camera.position).add(d.multiplyScalar(3)); controls.update();
+        joy.style.display = 'none'; modeBtn.textContent = 'Caminar';
+      }
+      walk.on = w;
+    }
+    controls.enabled = false; joy.style.display = 'block'; applyCam();
+    on(modeBtn, 'click', function () { setMode(!walk.on); });
+
+    var jid = null;
+    function joyMove(e) {
+      var r = joy.getBoundingClientRect(), R = r.width / 2;
+      var dx = (e.clientX - (r.left + R)) / R, dy = (e.clientY - (r.top + R)) / R, m = Math.sqrt(dx * dx + dy * dy);
+      if (m > 1) { dx /= m; dy /= m; }
+      walk.jx = dx; walk.jy = dy;
+      knob.style.transform = 'translate(' + (dx * R * 0.6) + 'px,' + (dy * R * 0.6) + 'px)';
+    }
+    function joyEnd(e) { if (e.pointerId !== jid) return; jid = null; walk.jx = 0; walk.jy = 0; knob.style.transform = ''; }
+    on(joy, 'pointerdown', function (e) { jid = e.pointerId; try { joy.setPointerCapture(jid); } catch (x) {} joyMove(e); e.preventDefault(); });
+    on(joy, 'pointermove', function (e) { if (e.pointerId === jid) joyMove(e); });
+    on(joy, 'pointerup', joyEnd); on(joy, 'pointercancel', joyEnd);
+
+    var lid = null, lx = 0, ly = 0;
+    on(canvas, 'pointerdown', function (e) { if (walk.on) { lid = e.pointerId; lx = e.clientX; ly = e.clientY; } });
+    on(canvas, 'pointermove', function (e) {
+      if (!walk.on || e.pointerId !== lid) return;
+      walk.yaw -= (e.clientX - lx) * 0.005; walk.pitch = clamp(walk.pitch - (e.clientY - ly) * 0.005, -1.2, 1.2);
+      lx = e.clientX; ly = e.clientY;
+    });
+    function lookEnd(e) { if (e.pointerId === lid) lid = null; }
+    on(canvas, 'pointerup', lookEnd); on(canvas, 'pointercancel', lookEnd);
+    on(window, 'keydown', function (e) { keys[e.code] = true; });
+    on(window, 'keyup', function (e) { keys[e.code] = false; });
+    on(window, 'resize', function () {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    on(window, 'pagehide', function () { try { ui.destroy(); } catch (e) {} });
+
+    var clock = new THREE.Clock();
+    renderer.setAnimationLoop(function () {
+      var dt = Math.min(clock.getDelta(), 0.05);
+      if (walk.on) {
+        var f = -walk.jy + (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+        var s = walk.jx + (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+        var m = Math.sqrt(f * f + s * s);
+        if (m > 1) { f /= m; s /= m; }
+        if (m > 0.02) {
+          var sp = 2.2 * dt, sy = Math.sin(walk.yaw), cy = Math.cos(walk.yaw);
+          var q = nav.collide(walk.x + (-sy * f + cy * s) * sp, walk.z + (-cy * f - sy * s) * sp, 0.3);
+          walk.x = q.x; walk.z = q.z;
+        }
+        applyCam();
+      } else controls.update();
+      renderer.render(scene, camera);
+    });
+
+    // ---- Salir: la interfaz ya limpió música, sala y conexiones; aquí se libera el resto ----
+    function exitKaraoke() {
+      if (exited) return;
+      exited = true;
+      krq.stop();
+      renderer.setAnimationLoop(null);
+      cleanups.forEach(function (fn) { try { fn(); } catch (e) {} });
+      cleanups = [];
+      scene.remove(karaoke.group);
+      karaoke.dispose();
+      try { controls.dispose(); } catch (e) {}
+      renderer.dispose();
+      if (renderer.forceContextLoss) renderer.forceContextLoss();
+      if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
+      ['menu', 'mode', 'joy', 'hint'].forEach(function (id) { $(id).style.display = 'none'; });
+      if (LOBBY_URL) { window.location.href = LOBBY_URL; return; }
+      $('exitmsg').style.display = 'flex';
+      $('again').onclick = function () { window.location.reload(); };
+    }
+
+    progress(100, 'Listo');
+    setTimeout(function () {
+      var l = $('loading'); l.style.opacity = '0';
+      setTimeout(function () { if (l.parentNode) l.parentNode.removeChild(l); }, 450);
+    }, 250);
+  }
+  main().catch(function (e) { ltxt.textContent = 'No se pudo iniciar: ' + (e && e.message || e); });
+})();
 </script>
 </body>
 </html>
