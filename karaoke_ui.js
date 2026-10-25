@@ -10,7 +10,11 @@
  *   ui.open();                                                     // o abrirlo desde un botón
  * 
  * Opciones (todas opcionales):
- *   catalogUrl, basePath, screen, reportEmail, musicPageUrl, qualityControl, peerOptions, playerName, autoAcceptRequests, videoFps
+ *   catalogUrl, basePath, screen, reportEmail, musicPageUrl, qualityControl, onExit, peerOptions, playerName, autoAcceptRequests, videoFps
+ * onExit: función que se llama al confirmar la salida (la interfaz ya limpió música, sala y conexiones). Con onExit, la puerta
+ *         del salón y un botón del menú piden confirmar y salen al lobby.
+ * Entrada por enlace: abrir la página con ?sala=CODIGO lleva directo a unirse (después del aviso de derechos).
+ * QR: si está cargado qrcode-generator (cdn.jsdelivr.net/npm/qrcode-generator@1/qrcode.js) se muestra el QR de la sala.
  * 
  * Requiere (solo para salas por internet): PeerJS → <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js">
  * Sin PeerJS las salas funcionan en modo local de pruebas (dos pestañas del mismo navegador).
@@ -208,6 +212,7 @@ function createKaraokeUI(opts) {
     musicPageUrl: opts.musicPageUrl || '',
     peerOptions: opts.peerOptions || {},
     tapRange: opts.tapRange || 12,
+    onExit: opts.onExit || null,
     videoFps: opts.videoFps || 24,
     autoAcceptRequests: opts.autoAcceptRequests !== false,
     playerName: opts.playerName || ('Invitado ' + Math.floor(100 + Math.random() * 900))
@@ -267,7 +272,7 @@ function createKaraokeUI(opts) {
   sheet.appendChild(body);
 
   var screens = {};
-  ['home', 'gate', 'list', 'add', 'room', 'player'].forEach(function (n) {
+  ['home', 'gate', 'list', 'add', 'room', 'player', 'exit'].forEach(function (n) {
     screens[n] = el('div', { class: 'k-screen' });
     body.appendChild(screens[n]);
   });
@@ -284,7 +289,7 @@ function createKaraokeUI(opts) {
   root.appendChild(sheet);
   document.body.appendChild(root);
 
-  var titles = { home: 'Karaoke', gate: 'Aviso', list: 'Lista de canciones', add: 'Agregar música', room: 'Sala', player: 'Reproductor' };
+  var titles = { home: 'Karaoke', gate: 'Aviso', list: 'Lista de canciones', add: 'Agregar música', exit: 'Salir', room: 'Sala', player: 'Reproductor' };
   function go(name, noPush) {
     if (!noPush && stack[stack.length - 1] !== name) stack.push(name);
     Object.keys(screens).forEach(function (k) { screens[k].classList.toggle('k-on', k === name); });
@@ -332,6 +337,26 @@ function createKaraokeUI(opts) {
     } });
     qBtn.textContent = 'Calidad gráfica: ' + opts.qualityControl.label();
     screens.home.appendChild(qBtn);
+  }
+  if (cfg.onExit) {
+    screens.home.appendChild(el('button', { class: 'k-ghost', style: 'margin-top:10px;width:100%', text: 'Salir del karaoke', onclick: function () { go('exit'); } }));
+  }
+  // ---------- Pantalla: salir (limpia todo y vuelve al lobby) ----------
+  [
+    el('h3', { text: '¿Salir del karaoke?', style: 'margin:0 0 8px;color:#ffd9a0;font-size:20px' }),
+    el('p', { text: 'Se detendrá la música, saldrás de la sala y se liberará la memoria del juego.' }),
+    el('div', { class: 'k-row' }, [
+      el('button', { class: 'k-btn k-danger', text: 'Salir del karaoke', onclick: function () { doExit(); } }),
+      el('button', { class: 'k-ghost', text: 'Quedarme', onclick: function () { back(); } })
+    ])
+  ].forEach(function (n) { screens.exit.appendChild(n); });
+  function openExit() { open(); go('exit'); }
+  function doExit() {
+    var cb = cfg.onExit;
+    if (isHost() && cur) { try { room.tr.send({ t: 'stop' }); } catch (e) {} }
+    close();
+    destroy();   // música, sala, conexiones, temporizadores y pantallas
+    if (cb) cb();
   }
 
   // ---------- Pantalla: aviso de derechos ----------
@@ -759,9 +784,17 @@ function createKaraokeUI(opts) {
   var peersEl = el('p', { class: 'k-muted' });
   var copyBtn = el('button', { class: 'k-btn', text: 'Copiar código', onclick: function () { copyCode(); } });
   var leaveBtn = el('button', { class: 'k-btn k-danger', text: 'Salir de la sala', onclick: function () { leaveRoom(); } });
+  var qrBox = el('div', { style: 'display:flex;justify-content:center;margin:10px 0' });
+  var linkEl = el('p', { class: 'k-muted', style: 'font-size:12px;word-break:break-all;text-align:center' });
+  var shareQrBtn = el('button', { class: 'k-btn', text: 'Compartir QR', onclick: function () { shareQR(); } });
+  var shareLinkBtn = el('button', { class: 'k-btn', text: 'Compartir enlace', onclick: function () { shareLink(); } });
+  var shareRow = el('div', { class: 'k-row', style: 'display:none' });
   var secLive = el('div', { class: 'k-sec' }, [
-    el('h3', { text: 'Sala activa' }), codeBox, peersEl,
-    el('div', { class: 'k-row' }, [copyBtn, el('button', { class: 'k-ghost', text: 'Elegir canción', onclick: function () { go('list'); } }), leaveBtn])
+    el('h3', { text: 'Sala activa' }), codeBox, qrBox, linkEl, peersEl,
+    el('div', { class: 'k-row' }, [shareQrBtn, shareLinkBtn]),
+    el('div', { class: 'k-row' }, [copyBtn]),
+    shareRow,
+    el('div', { class: 'k-row' }, [el('button', { class: 'k-ghost', text: 'Elegir canción', onclick: function () { go('list'); } }), leaveBtn])
   ]);
   var reportBtn2 = el('button', { class: 'k-ghost', text: 'Reportar contenido', onclick: function () { report(); } });
   [el('label', { text: 'Tu nombre' }), nameField, secCreate, secJoin, secLive, roomStatus, el('div', { class: 'k-row' }, [reportBtn2])]
@@ -784,6 +817,86 @@ function createKaraokeUI(opts) {
       peersEl.textContent = live ? ('Conectados (' + roomNames().length + '): ' + roomNames().join(', ')) : 'Conectando...';
     }
     nameField.disabled = !!room;
+    if (room) renderShare(); else qrFor = '';
+  }
+  function roomUrl(code) {
+    var base = (typeof location !== 'undefined' ? String(location.href) : '').split('#')[0].split('?')[0];
+    return base + '?sala=' + code;
+  }
+  var qrFor = '';
+  var qrData = null;
+  // Dibuja el QR en un lienzo con zona blanca alrededor (4 módulos)
+  function drawQR(cv, px) {
+    var n = qrData.n, cell = Math.max(2, Math.floor(px / (n + 8))), size = (n + 8) * cell;
+    cv.width = size; cv.height = size;
+    var g = cv.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, size, size);
+    g.fillStyle = '#000000';
+    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qrData.dark[r][c]) g.fillRect((c + 4) * cell, (r + 4) * cell, cell, cell);
+  }
+  function renderQR(url) {
+    clear(qrBox);
+    qrData = null;
+    if (typeof qrcode !== 'function') { qrBox.appendChild(el('p', { class: 'k-muted', text: 'No se pudo cargar el generador de QR. Comparte el enlace o el código.' })); return; }
+    try {
+      var qr = qrcode(0, 'M');
+      qr.addData(url); qr.make();
+      var n = qr.getModuleCount(), dark = [];
+      for (var r = 0; r < n; r++) { dark.push([]); for (var c = 0; c < n; c++) dark[r].push(!!qr.isDark(r, c)); }
+      qrData = { n: n, dark: dark };
+      var cv = document.createElement('canvas');
+      drawQR(cv, 200);
+      cv.style.cssText = 'width:200px;height:200px;image-rendering:pixelated;border-radius:8px';
+      qrBox.appendChild(cv);
+    } catch (e) { qrBox.appendChild(el('p', { class: 'k-muted', text: 'No se pudo dibujar el QR.' })); }
+  }
+  function copyText(text, okMsg) {
+    try { navigator.clipboard.writeText(text).then(function () { toast(okMsg); }, function () { toast('Copia el texto a mano'); }); }
+    catch (e) { toast('Copia el texto a mano'); }
+  }
+  function renderShare() {
+    if (!room) return;
+    var url = roomUrl(room.code);
+    linkEl.textContent = url;
+    if (qrFor !== url) { qrFor = url; renderQR(url); }
+    var canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+    clear(shareRow);
+    shareRow.style.display = canShare ? 'none' : 'flex';
+    if (!canShare) {
+      var txt = encodeURIComponent('Entra a mi sala de karaoke (KRK-' + room.code + '): '), u = encodeURIComponent(url);
+      [['WhatsApp', 'https://wa.me/?text=' + txt + u], ['Telegram', 'https://t.me/share/url?url=' + u + '&text=' + txt], ['Facebook', 'https://www.facebook.com/sharer/sharer.php?u=' + u]]
+        .forEach(function (a) { shareRow.appendChild(el('button', { class: 'k-ghost', text: a[0], onclick: function () { try { window.open(a[1], '_blank', 'noopener'); } catch (e) {} } })); });
+      shareRow.appendChild(el('button', { class: 'k-ghost', text: 'Copiar enlace', onclick: function () { copyText(url, 'Enlace copiado'); } }));
+    }
+  }
+  // Comparte solo el enlace (para quien no pueda leer el QR)
+  function shareLink() {
+    if (!room) return;
+    var url = roomUrl(room.code), text = 'Entra a mi sala de karaoke (KRK-' + room.code + ')';
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') navigator.share({ title: 'Karaoke', text: text, url: url }).catch(function () {});
+    else copyText(url, 'Enlace copiado');
+  }
+  // Comparte el QR como imagen (si el teléfono no permite compartir imágenes, la guarda para enviarla a mano)
+  function shareQR() {
+    if (!room) return;
+    if (!qrData) { toast('El QR no está disponible. Comparte el enlace.'); return; }
+    var big = document.createElement('canvas');
+    drawQR(big, 600);
+    var fname = 'karaoke-sala-' + room.code + '.png';
+    big.toBlob(function (blob) {
+      if (!blob) { toast('No se pudo crear la imagen del QR.'); return; }
+      var file = null;
+      try { file = new File([blob], fname, { type: 'image/png' }); } catch (e) {}
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: 'Karaoke', text: 'Escanea el QR para entrar a mi sala de karaoke (KRK-' + room.code + ')' }).catch(function () {});
+        return;
+      }
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = fname;
+      document.body.appendChild(a); a.click();
+      if (a.parentNode) a.parentNode.removeChild(a);
+      toast('QR guardado como imagen. Envíalo con tu app favorita.');
+    }, 'image/png');
   }
   function setRoomStatus(msg, isErr) { roomStatus.textContent = msg || ''; roomStatus.className = isErr ? 'k-err' : 'k-muted'; }
   function copyCode() {
@@ -993,7 +1106,7 @@ function createKaraokeUI(opts) {
   function attachTo(THREE, camera, domElement, rootObj) {
     detach();
     var ray = new THREE.Raycaster(), v = new THREE.Vector2(), down = null;
-    function meshes() { return (rootObj && rootObj.userData && rootObj.userData.tablets) || []; }
+    function ud(k) { return (rootObj && rootObj.userData && rootObj.userData[k]) || []; }
     function onDown(e) { down = { x: e.clientX, y: e.clientY, t: Date.now() }; }
     function onUp(e) {
       if (!down) return;
@@ -1003,8 +1116,11 @@ function createKaraokeUI(opts) {
       var rc = domElement.getBoundingClientRect();
       v.set(((e.clientX - rc.left) / rc.width) * 2 - 1, -((e.clientY - rc.top) / rc.height) * 2 + 1);
       ray.setFromCamera(v, camera);
-      var hits = ray.intersectObjects(meshes(), false);
-      if (hits.length && hits[0].distance <= cfg.tapRange) open();
+      var doors = ud('exitDoor');
+      var hits = ray.intersectObjects(ud('tablets').concat(doors), false);
+      if (!hits.length || hits[0].distance > cfg.tapRange) return;
+      if (doors.indexOf(hits[0].object) >= 0) { if (cfg.onExit) openExit(); }
+      else open();
     }
     domElement.addEventListener('pointerdown', onDown);
     domElement.addEventListener('pointerup', onUp);
@@ -1017,11 +1133,13 @@ function createKaraokeUI(opts) {
     attached = null;
   }
   function destroy() {
+    if (destroyed) return;
     destroyed = true;
     if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
     detach(); leaveRoom();
     timers.forEach(function (t) { clearInterval(t); });
-    try { audio.pause(); audio.removeAttribute('src'); } catch (e) {}
+    try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) {}
+    cur = null; catalog = []; cfg.screen = null;
     document.removeEventListener('keydown', onKey);
     if (root.parentNode) root.parentNode.removeChild(root);
     if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
@@ -1030,8 +1148,17 @@ function createKaraokeUI(opts) {
   // ---------- Inicio ----------
   loadMine();
   go('home', true);
-  loadCatalog();
+  var readyP = loadCatalog();
   drawScreen();
+  // Entrada directa por enlace (?sala=CODIGO): pasa por el aviso de derechos y se une
+  var joinCode = '';
+  try { var mm = /[?&]sala=([A-Za-z0-9\-]+)/.exec(typeof location !== 'undefined' ? location.search : ''); if (mm) joinCode = krkNormalizeCode(mm[1]); } catch (e) {}
+  if (joinCode.length === 5) {
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    codeIn.value = 'KRK-' + joinCode;
+    open();
+    openGate('room', function () { go('room'); joinRoom(joinCode); });
+  }
 
   return {
     open: open,
@@ -1042,6 +1169,7 @@ function createKaraokeUI(opts) {
     setScreen: function (s) { cfg.screen = s; drawScreen(); },
     setVideoFps: function (n) { if (n > 0) cfg.videoFps = n; },
     reload: loadCatalog,
+    ready: readyP,
     state: function () { return { song: cur && cur.song, room: room && { code: room.code, role: room.role, connected: room.connected, mode: room.mode } }; }
   };
 }
