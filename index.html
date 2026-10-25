@@ -20,9 +20,12 @@
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="karaoke.js"></script>
 <script src="karaoke_ui.js"></script>
+<script src="karaoke_quality.js"></script>
 <script>
-  var renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // 1) Calidad según el teléfono (se recuerda entre visitas)
+  var qinfo = krqDetect();
+
+  var renderer = new THREE.WebGLRenderer({ antialias: qinfo.tier !== 'low', powerPreference: 'high-performance' });
   renderer.setSize(window.innerWidth, window.innerHeight);
   if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
   document.body.appendChild(renderer.domElement);
@@ -39,15 +42,22 @@
   controls.maxDistance = 11;
   controls.update();
 
-  var karaoke = createKaraoke(THREE);
+  var karaoke = createKaraoke(THREE, { quality: qinfo.tier });
   scene.add(karaoke.group);
+
+  // 2) Ajuste automático: baja la resolución y las luces si el juego va lento
+  var krq = createKaraokeQuality({ renderer: renderer, karaoke: karaoke.group, info: qinfo });
 
   var ui = createKaraokeUI({
     screen: karaoke.group.userData.screen,   // las pantallas del lugar siguen a la tableta
     catalogUrl: 'musica/songs.json',
     basePath: 'musica/',
-    reportEmail: ''                           // pon tu correo para activar "Reportar contenido"
+    musicPageUrl: '',                         // pon aquí la dirección de tu página de músicas
+    reportEmail: '',                          // pon tu correo para activar "Reportar contenido"
+    qualityControl: krq                       // botón "Calidad gráfica" en el menú
   });
+  krq.setUi(ui);
+  krq.start();
   ui.attachTo(THREE, camera, renderer.domElement, karaoke.group);
   document.getElementById('menu').addEventListener('click', function () { ui.open(); });
 
