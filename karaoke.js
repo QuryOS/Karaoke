@@ -4,13 +4,17 @@
  * Detalles: tabletas táctiles que abren el menú del juego, pantallas sincronizadas con la música (letra, portada y progreso), reloj de pared realista sincronizado con la hora del dispositivo, estante de álbumes de vinilo con portadas, almohadas redondeadas en los sofás, escenario con pantalla grande de letras, monitores de apoyo y micrófonos con pedestal y cables, bocinas y subwoofers con rejilla, cabina del presentador con laptop y mezcladora, catálogo de canciones en estantería, barra con frente de listones, taburetes con aro, repisas con botellas de formas distintas, vasos, copas y jarras, refrigerador con latas y puerta de vidrio, caja registradora, menú de pizarra, mesas redondas con sillas de madera completas, tabletas con catálogo, sofás acolchados con patas y cojines, cortinas de terciopelo, paneles acústicos, cuadros y discos de oro, reloj, plantas, puerta con herrajes y letrero de salida, techo con luces empotradas suaves, iluminación cálida y discreta, sin exterior — todo cerrado
  * 
  * Uso:
- *   const karaoke = createKaraoke(THREE);
+ *   const karaoke = createKaraoke(THREE);               // o createKaraoke(THREE, { quality: 'low' }) en teléfonos modestos
  *   scene.add(karaoke.group);
  * 
  * Expone:
  *   karaoke.group → Grupo principal
  *   karaoke.group.userData.tablets → mallas de las tabletas (para detectar toques con Raycaster)
  *   karaoke.group.userData.screen.draw(estado) → redibuja todas las pantallas del lugar
+ *   karaoke.group.userData.setQuality('full' | 'medium' | 'low') → ajusta las luces en vivo (sin reconstruir)
+ * 
+ * Calidad (opts.quality): 'high' (por defecto), 'medium' o 'low'. Baja la cantidad de luces, usa materiales más
+ * simples, une las piezas fijas en pocas mallas y reduce la resolución de las pantallas.
  * 
  * Compatible con Three.js r128 o superior.
  */
@@ -25,6 +29,8 @@ function createKaraoke(THREE, opts) {
     neon: 0xff4f9a,
     warm: 0xffd9a0
   };
+
+  var quality = (opts.quality === 'low' || opts.quality === 'medium') ? opts.quality : 'high';
 
   var group = new THREE.Group();
 
@@ -164,6 +170,12 @@ function createKaraoke(THREE, opts) {
   }
   // st: { title, cover (Image), pos, dur, progress, paused, room, peers, lines:{prev,cur,next,next2,progress}, hint }
   function drawLyrics(g, w, h, st) {
+    g.save();
+    g.scale(w / 1024, h / 576);
+    drawLyricsRaw(g, 1024, 576, st);
+    g.restore();
+  }
+  function drawLyricsRaw(g, w, h, st) {
     st = st || {};
     var gr = g.createLinearGradient(0, 0, w, h);
     gr.addColorStop(0, '#14143a'); gr.addColorStop(1, '#3a1450');
@@ -252,7 +264,8 @@ function createKaraoke(THREE, opts) {
     g.textAlign = 'right'; g.fillText(st.dur ? fmtTime(st.dur) : '--:--', w - 60, 535);
     if (st.paused && hasLy) { g.textAlign = 'center'; g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = 'bold 28px Arial, sans-serif'; g.fillText('EN PAUSA', w / 2, vid ? 130 : 480); }
   }
-  var tLyrics = clampTex(makeTex(1024, 576, function (g, w, h) { drawLyrics(g, w, h, null); }));
+  var SW = quality === 'low' ? 512 : (quality === 'medium' ? 768 : 1024);   // resolución de las pantallas
+  var tLyrics = clampTex(makeTex(SW, Math.round(SW * 9 / 16), function (g, w, h) { drawLyrics(g, w, h, null); }));
 
   var tSongs = clampTex(makeTex(512, 512, function (g, w, h) {
     g.fillStyle = '#10131f'; g.fillRect(0, 0, w, h);
@@ -411,7 +424,13 @@ function createKaraoke(THREE, opts) {
     }
   });
 
-  function std(o) { return new THREE.MeshStandardMaterial(o); }
+  // En calidad baja se usan materiales más simples (no calculan brillo metálico), mucho más ligeros para la GPU
+  function std(o) {
+    if (quality !== 'low') return new THREE.MeshStandardMaterial(o);
+    var o2 = {};
+    Object.keys(o).forEach(function (k) { if (k !== 'roughness' && k !== 'metalness' && k !== 'flatShading') o2[k] = o[k]; });
+    return new THREE.MeshLambertMaterial(o2);
+  }
   function basic(o) { return new THREE.MeshBasicMaterial(o); }
 
   var mCarpet = std({ map: tCarpet, roughness: 1 });
@@ -483,8 +502,8 @@ function createKaraoke(THREE, opts) {
   // Usa InstancedMesh para objetos repetidos
 
   var UB = new THREE.BoxGeometry(1, 1, 1);
-  var UC = new THREE.CylinderGeometry(1, 1, 1, 18);
-  var US = new THREE.SphereGeometry(1, 14, 10);
+  var UC = new THREE.CylinderGeometry(1, 1, 1, quality === 'low' ? 10 : 18);
+  var US = quality === 'low' ? new THREE.SphereGeometry(1, 8, 6) : new THREE.SphereGeometry(1, 14, 10);
   var UCone = new THREE.ConeGeometry(1, 1, 8);
   var UPlane = new THREE.PlaneGeometry(1, 1);
   UPlane.rotateX(-Math.PI / 2);
@@ -570,6 +589,7 @@ function createKaraoke(THREE, opts) {
   // del dispositivo: se actualiza solo en cada cuadro que se dibuja.
   function buildClock(x, y, z) {
     var cg = new THREE.Group();
+    cg.userData.noMerge = true;   // sus manecillas se mueven: no se unen a otras mallas
     cg.position.set(x, y, z);
     cg.rotation.y = Math.PI;
     group.add(cg);
@@ -620,11 +640,14 @@ function createKaraoke(THREE, opts) {
   }
 
   // ---------- Iluminación cálida y discreta ----------
-  group.add(new THREE.HemisphereLight(0xfff1dc, 0x2a1f24, 0.55));
+  var hemi = new THREE.HemisphereLight(0xfff1dc, 0x2a1f24, 0.55);
+  group.add(hemi);
+  var warmLights = [];
   [[-4.5, 3, 0], [4.5, 3, 0], [0, 3, 4], [-4.5, 3, -4]].forEach(function (p) {
     var pl = new THREE.PointLight(colors.warm, 0.3, 11);
     pl.position.set(p[0], p[1], p[2]);
     group.add(pl);
+    warmLights.push(pl);
   });
   var stageSpot = new THREE.SpotLight(0xfff2dd, 0.8, 12, 0.7, 0.7, 1);
   stageSpot.position.set(0, 3.4, -2);
@@ -633,6 +656,16 @@ function createKaraoke(THREE, opts) {
   var neonLight = new THREE.PointLight(colors.neon, 0.3, 4);
   neonLight.position.set(-8, 3.0, 4.3);
   group.add(neonLight);
+  // Cada luz extra cuesta en cada píxel: en niveles bajos se apagan y la luz de ambiente compensa
+  function setLights(level) {
+    hemi.intensity = level === 'low' ? 1.0 : (level === 'medium' ? 0.8 : 0.55);
+    warmLights.forEach(function (pl, i) {
+      pl.visible = level === 'full' || (level === 'medium' && i < 2) || (level === 'low' && i === 2);
+    });
+    stageSpot.visible = level !== 'low';
+    neonLight.visible = level === 'full';
+  }
+  setLights(quality === 'low' ? 'low' : (quality === 'medium' ? 'medium' : 'full'));
 
   // ---------- Estructura: piso, paredes, techo y molduras ----------
   box(18, 0.2, 14, mCarpet, 0, -0.1, 0);
@@ -1238,6 +1271,53 @@ function createKaraoke(THREE, opts) {
   inst(UC, mSoil, soil);
   inst(UCone, mLeaf, leaves);
 
+  // Une las piezas fijas que comparten material en una sola malla (de ~330 llamadas de dibujo a unas 40)
+  function mergeStatic() {
+    group.updateMatrixWorld(true);
+    function protectedObj(o) {
+      for (var q = o; q && q !== group; q = q.parent) if (q.userData && q.userData.noMerge) return true;
+      return false;
+    }
+    var buckets = {}, order = [];
+    group.traverse(function (o) {
+      if (o === group || !o.isMesh || o.isInstancedMesh) return;
+      var m = o.material;
+      if (!m || Array.isArray(m) || m.transparent || m.visible === false || protectedObj(o)) return;
+      if (!o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+      if (!buckets[m.uuid]) { buckets[m.uuid] = { mat: m, items: [] }; order.push(m.uuid); }
+      buckets[m.uuid].items.push(o);
+    });
+    order.forEach(function (key) {
+      var b = buckets[key], parts = [], total = 0;
+      b.items.forEach(function (o) {
+        var g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        g.applyMatrix4(o.matrixWorld);
+        parts.push(g);
+        total += g.attributes.position.count;
+      });
+      function pack(name, size) {
+        var out = new Float32Array(total * size), at = 0;
+        parts.forEach(function (g) {
+          var a = g.attributes[name];
+          if (a) out.set(a.array, at);
+          at += g.attributes.position.count * size;
+        });
+        return out;
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pack('position', 3), 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(pack('normal', 3), 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(pack('uv', 2), 2));
+      var merged = new THREE.Mesh(geo, b.mat);
+      merged.castShadow = merged.receiveShadow = true;
+      group.add(merged);
+      b.items.forEach(function (o) { if (o.parent) o.parent.remove(o); });
+    });
+  }
+  if (quality !== 'high') mergeStatic();
+
+  group.userData.quality = quality;
+  group.userData.setQuality = setLights;
   group.userData.tablets = tabletMeshes.filter(Boolean);
   group.userData.screen = {
     texture: tLyrics,
