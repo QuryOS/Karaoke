@@ -44,9 +44,9 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1/qrcode.js"></script>
-<script src="karaoke.js"></script>
-<script src="karaoke_ui.js"></script>
-<script src="karaoke_quality.js"></script>
+<script src="karaoke.js?v=4"></script>
+<script src="karaoke_ui.js?v=4"></script>
+<script src="karaoke_quality.js?v=4"></script>
 <script>
 (function () {
   var LOADING_IMAGE = '';   // ruta de tu imagen de carga (ej. 'cargando.png'); vacío = solo el título
@@ -80,6 +80,7 @@
     var karaoke = createKaraoke(THREE, { quality: qinfo.tier });
     scene.add(karaoke.group);
     var nav = karaoke.group.userData.nav;
+    if (!nav) throw new Error('karaoke.js es una versión vieja. Sube el karaoke.js nuevo y recarga sin caché.');
     var krq = createKaraokeQuality({ renderer: renderer, karaoke: karaoke.group, info: qinfo });
 
     progress(65, 'Preparando el menú...'); await frame();
